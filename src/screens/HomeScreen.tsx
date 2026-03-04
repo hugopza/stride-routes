@@ -1,4 +1,4 @@
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
 import { useLayoutEffect, useState } from "react";
 import {
   Alert,
@@ -13,9 +13,9 @@ import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { InputRow } from "../components/InputRow";
 import { generateRoutes } from "../lib/generate-routes";
-import type { RootStackParamList } from "../types/navigation";
+import type { RootTabParamList } from "../navigation/types";
 
-type Props = NativeStackScreenProps<RootStackParamList, "Home">;
+type Props = BottomTabScreenProps<RootTabParamList, "Explore">;
 
 export function HomeScreen({ navigation }: Props) {
   const [hours, setHours] = useState("0");
@@ -63,7 +63,10 @@ export function HomeScreen({ navigation }: Props) {
     // UI Only states for the other fields (Surface, etc) are ignored by logic per constraints
     const routes = generateRoutes(params);
 
-    navigation.navigate("Results", { params, routes });
+    navigation.navigate("Routes", {
+      screen: "Results",
+      params: { params, routes },
+    });
   };
 
   const isFormValid =
@@ -171,7 +174,6 @@ export function HomeScreen({ navigation }: Props) {
           onPress={onGenerate}
           disabled={!isFormValid}
         />
-        <Button variant="ghost" label="Advanced options (later)" />
       </View>
     </ScrollView>
   );

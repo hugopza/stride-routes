@@ -4,9 +4,9 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Button } from "../components/Button";
 import { RouteCard } from "../components/RouteCard";
-import type { RootStackParamList } from "../types/navigation";
+import type { RoutesStackParamList } from "../navigation/types";
 
-type Props = NativeStackScreenProps<RootStackParamList, "Results">;
+type Props = NativeStackScreenProps<RoutesStackParamList, "Results">;
 
 export function ResultsScreen({ navigation, route }: Props) {
   const { params, routes } = route.params;

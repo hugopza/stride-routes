@@ -9,11 +9,11 @@ import {
   View,
 } from "react-native";
 
-import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
-import type { RootStackParamList } from "../types/navigation";
+import type { RoutesStackParamList } from "../navigation/types";
+import { Button } from "../components/Button";
 
-type Props = NativeStackScreenProps<RootStackParamList, "RouteDetail">;
+type Props = NativeStackScreenProps<RoutesStackParamList, "RouteDetail">;
 
 export function RouteDetailScreen({ navigation, route }: Props) {
   const { route: selectedRoute } = route.params;
@@ -27,7 +27,7 @@ export function RouteDetailScreen({ navigation, route }: Props) {
           onPress={() => Alert.alert("Share", "Sharing route...")}
           style={{ paddingLeft: 10 }}
         >
-          <Text style={{ fontSize: 20 }}>🔗</Text>
+          <Text style={{ fontSize: 20 }}>Share</Text>
         </Pressable>
       ),
     });
@@ -47,7 +47,6 @@ export function RouteDetailScreen({ navigation, route }: Props) {
         <View style={styles.mapCard}>
           <View style={styles.mapPlaceholder}>
             <Text style={styles.mapText}>Map placeholder</Text>
-            {/* Simple lines just for wireframe parity effect */}
             <View style={styles.fakeLine1} />
             <View style={styles.fakeLine2} />
             <View style={styles.fakePointStart} />
@@ -93,20 +92,20 @@ export function RouteDetailScreen({ navigation, route }: Props) {
         </View>
 
         <Button
-          label="↓ Download GPX"
+          label="Download GPX"
           onPress={() => Alert.alert("Download GPX", "GPX export coming soon.")}
           style={styles.actionButton}
         />
 
         <View style={styles.secondaryActions}>
           <Button
-            label="♥ Save"
+            label="Save"
             variant="outline"
             style={{ flex: 1 }}
             onPress={() => Alert.alert("Save", "Saved.")}
           />
           <Button
-            label="↗ Start"
+            label="Start"
             variant="outline"
             style={{ flex: 1 }}
             onPress={() => Alert.alert("Start", "Navigation started.")}
@@ -136,22 +135,6 @@ export function RouteDetailScreen({ navigation, route }: Props) {
           onPress={() => Alert.alert("Feedback", "Submitted.")}
         />
       </ScrollView>
-
-      {/* Fake Bottom Tab Bar purely for visual matching of the wireframe */}
-      <View style={styles.fakeTabBar}>
-        <View style={styles.tabItem}>
-          <Text style={styles.tabIconActive}>🧭</Text>
-          <Text style={styles.tabTextActive}>Explore</Text>
-        </View>
-        <View style={styles.tabItem}>
-          <Text style={styles.tabIcon}>🔀</Text>
-          <Text style={styles.tabText}>Routes</Text>
-        </View>
-        <View style={styles.tabItem}>
-          <Text style={styles.tabIcon}>👤</Text>
-          <Text style={styles.tabText}>Profile</Text>
-        </View>
-      </View>
     </View>
   );
 }
@@ -303,38 +286,5 @@ const styles = StyleSheet.create({
     backgroundColor: "#f8fafc",
     borderColor: "#e2e8f0",
     borderRadius: 20,
-  },
-  submitFeedback: {
-    marginBottom: 16,
-  },
-  fakeTabBar: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-    borderTopWidth: 1,
-    borderTopColor: "#e2e8f0",
-    paddingVertical: 12,
-    backgroundColor: "#fff",
-  },
-  tabItem: {
-    alignItems: "center",
-  },
-  tabIconActive: {
-    fontSize: 20,
-    color: "#111827",
-  },
-  tabTextActive: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#111827",
-    marginTop: 4,
-  },
-  tabIcon: {
-    fontSize: 20,
-    opacity: 0.5,
-  },
-  tabText: {
-    fontSize: 10,
-    color: "#64748b",
-    marginTop: 4,
   },
 });
