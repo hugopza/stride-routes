@@ -1,15 +1,24 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Button } from "../components/Button";
 import { RouteCard } from "../components/RouteCard";
+import { generateRoutes } from "../lib/generate-routes";
 import type { RoutesStackParamList } from "../navigation/types";
+import type { CandidateRoute } from "../types/route";
 
 type Props = NativeStackScreenProps<RoutesStackParamList, "Results">;
 
 export function ResultsScreen({ navigation, route }: Props) {
   const { params, routes } = route.params;
+
+  const [list, setList] = useState<CandidateRoute[]>(routes);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
+  useEffect(() => {
+    setList(routes);
+  }, [routes]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -18,16 +27,25 @@ export function ResultsScreen({ navigation, route }: Props) {
           onPress={() => navigation.goBack()}
           style={styles.headerButton}
         >
-          <Text style={styles.headerButtonText}>≡ Refine</Text>
+          <Text style={styles.headerButtonText}>Refine</Text>
         </Pressable>
       ),
     });
   }, [navigation]);
 
+  const onRegenerate = () => {
+    setIsRegenerating(true);
+
+    setTimeout(() => {
+      setList(generateRoutes(params));
+      setIsRegenerating(false);
+    }, 180);
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>{routes.length} routes found</Text>
+        <Text style={styles.title}>{list.length} routes found</Text>
 
         <View style={styles.filterRow}>
           <View style={styles.filterChip}>
@@ -41,26 +59,44 @@ export function ResultsScreen({ navigation, route }: Props) {
           </View>
         </View>
 
-        {routes.map((candidate, index) => (
-          <RouteCard
-            key={candidate.id}
-            route={candidate}
-            onPress={() =>
-              navigation.navigate("RouteDetail", { route: candidate })
-            }
-            tags={
-              index === 0 ? ["FLATTER", "MIXED"] : index === 1 ? ["URBAN"] : []
-            }
-          />
-        ))}
+        {list.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>No routes available</Text>
+            <Text style={styles.emptyText}>Try regenerating with the same inputs.</Text>
+            <Button
+              label="Regenerate"
+              variant="outline"
+              onPress={onRegenerate}
+              loading={isRegenerating}
+            />
+          </View>
+        ) : (
+          list.map((candidate, index) => (
+            <RouteCard
+              key={candidate.id}
+              route={candidate}
+              onPress={() =>
+                navigation.navigate("RouteDetail", { route: candidate })
+              }
+              tags={
+                index === 0
+                  ? ["FLATTER", "MIXED"]
+                  : index === 1
+                    ? ["URBAN"]
+                    : []
+              }
+            />
+          ))
+        )}
       </ScrollView>
 
       <View style={styles.footer}>
         <Button
-          label="↻ Regenerate"
+          label="Regenerate"
           variant="outline"
-          onPress={() => navigation.goBack()}
+          onPress={onRegenerate}
           style={styles.regenerateButton}
+          loading={isRegenerating}
         />
       </View>
     </View>
@@ -113,6 +149,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#4b5563",
     fontWeight: "500",
+  },
+  emptyState: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    padding: 16,
+    gap: 8,
+    backgroundColor: "#f9fafb",
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  emptyText: {
+    fontSize: 14,
+    color: "#4b5563",
+    marginBottom: 4,
   },
   footer: {
     position: "absolute",

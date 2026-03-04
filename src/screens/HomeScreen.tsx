@@ -1,7 +1,8 @@
 import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -14,69 +15,167 @@ import { Chip } from "../components/Chip";
 import { InputRow } from "../components/InputRow";
 import { generateRoutes } from "../lib/generate-routes";
 import type { RootTabParamList } from "../navigation/types";
+import type { RouteParams } from "../types/route";
 
 type Props = BottomTabScreenProps<RootTabParamList, "Explore">;
+
+type RouteParamsWithUi = RouteParams & {
+  circular: boolean;
+  start?: string;
+  end?: string;
+  surface: string;
+  intensity: string;
+  safety: string;
+  waypoints: string[];
+};
+
+function parsePace(raw: string): number | null {
+  const value = raw.trim();
+
+  if (!value) {
+    return null;
+  }
+
+  if (value.includes(":")) {
+    const [minutesText, secondsText] = value.split(":");
+    const minutes = Number(minutesText);
+    const seconds = Number(secondsText);
+
+    if (
+      Number.isNaN(minutes) ||
+      Number.isNaN(seconds) ||
+      minutes < 0 ||
+      seconds < 0 ||
+      seconds >= 60
+    ) {
+      return null;
+    }
+
+    return minutes + seconds / 60;
+  }
+
+  const normalized = value.replace(",", ".");
+  const parsed = Number.parseFloat(normalized);
+
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
 
 export function HomeScreen({ navigation }: Props) {
   const [hours, setHours] = useState("0");
   const [minutes, setMinutes] = useState("45");
   const [pace, setPace] = useState("5:30");
   const [isCircular, setIsCircular] = useState(true);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [waypoints] = useState<string[]>([]);
   const [surface, setSurface] = useState("Mixed");
   const [intensity, setIntensity] = useState("Balanced");
   const [safety, setSafety] = useState("Safer streets");
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => <Text style={{ fontSize: 24 }}>⚙️</Text>,
-    });
-  }, [navigation]);
+  const hasShownStartSoon = useRef(false);
+  const hasShownEndSoon = useRef(false);
+
+  useEffect(() => {
+    if (isCircular) {
+      setEnd("");
+    }
+  }, [isCircular]);
+
+  const parsedHours = Number(hours) || 0;
+  const parsedMinutes = Number(minutes) || 0;
+  const totalMinutes = parsedHours * 60 + parsedMinutes;
+  const normalizedPace = parsePace(pace);
+
+  const estimatedKm =
+    normalizedPace && totalMinutes > 0 ? totalMinutes / normalizedPace : null;
+
+  const distanceHint = estimatedKm
+    ? `Estimated distance: ~${estimatedKm.toFixed(1)} km`
+    : undefined;
+
+  const paceError =
+    pace.length > 0 && normalizedPace === null
+      ? "Use mm:ss or decimal format (e.g. 5:30, 5.5, 5,5)."
+      : undefined;
 
   const onGenerate = () => {
-    // Parse time
-    const parsedHours = Number(hours) || 0;
-    const parsedMinutes = Number(minutes) || 0;
-    const totalMinutes = parsedHours * 60 + parsedMinutes;
-
-    // Parse pace (e.g. "5:30" -> 5.5)
-    let parsedPace = 0;
-    if (pace.includes(":")) {
-      const [m, s] = pace.split(":");
-      parsedPace = Number(m) + Number(s) / 60;
-    } else {
-      parsedPace = Number(pace);
-    }
-
-    if (totalMinutes <= 0 || !parsedPace || parsedPace <= 0) {
+    if (totalMinutes <= 0 || normalizedPace === null) {
       Alert.alert(
         "Invalid input",
-        "Enter valid positive values for time and pace.",
+        "Enter valid positive time and pace values.",
       );
       return;
     }
 
-    const params = {
+    const params: RouteParamsWithUi = {
       timeMinutes: totalMinutes,
-      paceMinPerKm: parsedPace,
+      paceMinPerKm: normalizedPace,
+      circular: isCircular,
+      start: start.trim() || undefined,
+      end: !isCircular && end.trim() ? end.trim() : undefined,
+      surface,
+      intensity,
+      safety,
+      waypoints,
     };
 
-    // UI Only states for the other fields (Surface, etc) are ignored by logic per constraints
-    const routes = generateRoutes(params);
+    setIsGenerating(true);
 
-    navigation.navigate("Routes", {
-      screen: "Results",
-      params: { params, routes },
-    });
+    setTimeout(() => {
+      const routes = generateRoutes(params);
+
+      navigation.navigate("Routes", {
+        screen: "Results",
+        params: { params, routes },
+      });
+
+      setIsGenerating(false);
+    }, 180);
   };
 
-  const isFormValid =
-    (Number(hours) > 0 || Number(minutes) > 0) && pace.length > 0;
+  const isFormValid = totalMinutes > 0 && normalizedPace !== null;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>START</Text>
-        <InputRow placeholder="Search location..." />
+        <InputRow
+          label="Start"
+          placeholder="Search location..."
+          value={start}
+          onChangeText={setStart}
+          onFocus={() => {
+            if (!hasShownStartSoon.current) {
+              hasShownStartSoon.current = true;
+              Alert.alert(
+                "Coming soon",
+                "Place search is coming soon. You can type manually for now.",
+              );
+            }
+          }}
+        />
+        {!isCircular && (
+          <InputRow
+            label="End"
+            placeholder="Set destination..."
+            value={end}
+            onChangeText={setEnd}
+            onFocus={() => {
+              if (!hasShownEndSoon.current) {
+                hasShownEndSoon.current = true;
+                Alert.alert(
+                  "Coming soon",
+                  "Destination search is coming soon. You can type manually for now.",
+                );
+              }
+            }}
+          />
+        )}
       </View>
 
       <View style={styles.section}>
@@ -111,8 +210,14 @@ export function HomeScreen({ navigation }: Props) {
           label="Target pace (min/km)"
           value={pace}
           onChangeText={setPace}
-          keyboardType="numeric"
-          hint="Estimated distance: 8.2 km"
+          keyboardType={Platform.select({
+            ios: "numbers-and-punctuation",
+            default: "default",
+          })}
+          hint={distanceHint}
+          error={paceError}
+          autoCapitalize="none"
+          autoCorrect={false}
         />
       </View>
 
@@ -148,7 +253,13 @@ export function HomeScreen({ navigation }: Props) {
         <Text style={styles.sectionTitle}>WAYPOINTS</Text>
         <View style={styles.waypointsBox}>
           <Text style={styles.waypointsEmpty}>No waypoints added</Text>
-          <Button variant="ghost" label="+ Add waypoint" />
+          <Button
+            variant="ghost"
+            label="+ Add waypoint"
+            onPress={() =>
+              Alert.alert("Coming soon", "Waypoint editing is coming soon.")
+            }
+          />
         </View>
       </View>
 
@@ -173,6 +284,7 @@ export function HomeScreen({ navigation }: Props) {
           label="Generate 5 routes"
           onPress={onGenerate}
           disabled={!isFormValid}
+          loading={isGenerating}
         />
       </View>
     </ScrollView>
