@@ -1,8 +1,16 @@
 import type { CandidateRoute, RouteParams } from '../types/route';
 
 export function generateRoutes(params: RouteParams): CandidateRoute[] {
-  const baseDistance = params.timeMinutes / params.paceMinPerKm;
-  const baseDuration = Math.round(baseDistance * params.paceMinPerKm);
+  const fallbackPace = 6;
+  const pace = params.paceMinPerKm && params.paceMinPerKm > 0 ? params.paceMinPerKm : fallbackPace;
+  const baseDistance = params.targetDistanceKm > 0
+    ? params.targetDistanceKm
+    : params.timeMinutes && params.timeMinutes > 0
+      ? params.timeMinutes / pace
+      : 5;
+  const baseDuration = params.timeMinutes && params.timeMinutes > 0
+    ? Math.round(params.timeMinutes)
+    : Math.round(baseDistance * pace);
 
   return [
     {

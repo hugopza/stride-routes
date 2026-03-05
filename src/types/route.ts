@@ -1,6 +1,8 @@
 export type RouteParams = {
-  timeMinutes: number;
-  paceMinPerKm: number;
+  goalMode?: "time" | "distance";
+  timeMinutes?: number;
+  paceMinPerKm?: number;
+  targetDistanceKm: number;
 };
 
 export type CandidateRoute = {

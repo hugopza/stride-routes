@@ -64,9 +64,25 @@ function parsePace(raw: string): number | null {
   return parsed;
 }
 
+function parseDistance(raw: string): number | null {
+  const normalized = raw.trim().replace(",", ".");
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(normalized);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
 export function HomeScreen({ navigation }: Props) {
+  const [goalMode, setGoalMode] = useState<"time" | "distance">("time");
   const [hours, setHours] = useState("0");
   const [minutes, setMinutes] = useState("45");
+  const [distanceKm, setDistanceKm] = useState("8");
   const [pace, setPace] = useState("5:30");
   const [isCircular, setIsCircular] = useState(true);
   const [start, setStart] = useState("");
@@ -90,31 +106,56 @@ export function HomeScreen({ navigation }: Props) {
   const parsedMinutes = Number(minutes) || 0;
   const totalMinutes = parsedHours * 60 + parsedMinutes;
   const normalizedPace = parsePace(pace);
+  const normalizedDistance = parseDistance(distanceKm);
 
-  const estimatedKm =
-    normalizedPace && totalMinutes > 0 ? totalMinutes / normalizedPace : null;
+  const isTimeMode = goalMode === "time";
+  const isTimeValid = totalMinutes > 0 && normalizedPace !== null;
+  const isDistanceValid = normalizedDistance !== null;
 
-  const distanceHint = estimatedKm
-    ? `Estimated distance: ~${estimatedKm.toFixed(1)} km`
-    : undefined;
+  const targetDistanceKm = isTimeMode
+    ? isTimeValid && normalizedPace
+      ? totalMinutes / normalizedPace
+      : 0
+    : (normalizedDistance ?? 0);
 
-  const paceError =
-    pace.length > 0 && normalizedPace === null
-      ? "Use mm:ss or decimal format (e.g. 5:30, 5.5, 5,5)."
+  const distanceHint =
+    isTimeMode && targetDistanceKm > 0
+      ? `Estimated distance: ~${targetDistanceKm.toFixed(1)} km`
+      : undefined;
+
+  const estimatedTimeHint =
+    !isTimeMode && normalizedDistance && normalizedPace
+      ? `Estimated time: ~${Math.round(normalizedDistance * normalizedPace)} min`
+      : undefined;
+
+  const paceError = isTimeMode
+    ? normalizedPace === null
+      ? "Pace is required. Use mm:ss or decimal format (e.g. 5:30, 5.5, 5,5)."
+      : undefined
+    : pace.trim().length > 0 && normalizedPace === null
+      ? "Invalid pace. Use mm:ss or decimal format."
+      : undefined;
+
+  const distanceError =
+    !isTimeMode && !isDistanceValid
+      ? "Distance must be greater than 0."
       : undefined;
 
   const onGenerate = () => {
-    if (totalMinutes <= 0 || normalizedPace === null) {
-      Alert.alert(
-        "Invalid input",
-        "Enter valid positive time and pace values.",
-      );
+    if ((isTimeMode && !isTimeValid) || (!isTimeMode && !isDistanceValid)) {
+      Alert.alert("Invalid input", "Please fix the highlighted fields.");
       return;
     }
 
     const params: RouteParamsWithUi = {
-      timeMinutes: totalMinutes,
-      paceMinPerKm: normalizedPace,
+      goalMode,
+      timeMinutes: isTimeMode
+        ? totalMinutes
+        : normalizedDistance && normalizedPace
+          ? Math.round(normalizedDistance * normalizedPace)
+          : undefined,
+      paceMinPerKm: normalizedPace ?? undefined,
+      targetDistanceKm,
       circular: isCircular,
       start: start.trim() || undefined,
       end: !isCircular && end.trim() ? end.trim() : undefined,
@@ -138,10 +179,28 @@ export function HomeScreen({ navigation }: Props) {
     }, 180);
   };
 
-  const isFormValid = totalMinutes > 0 && normalizedPace !== null;
+  const isFormValid = isTimeMode ? isTimeValid : isDistanceValid;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>GOAL</Text>
+        <View style={styles.goalRow}>
+          <Chip
+            label="By time"
+            selected={isTimeMode}
+            onPress={() => setGoalMode("time")}
+            style={{ flex: 1 }}
+          />
+          <Chip
+            label="By distance"
+            selected={!isTimeMode}
+            onPress={() => setGoalMode("distance")}
+            style={{ flex: 1 }}
+          />
+        </View>
+      </View>
+
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>START</Text>
         <InputRow
@@ -190,36 +249,49 @@ export function HomeScreen({ navigation }: Props) {
         </View>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>TIME & PACE</Text>
-        <View style={styles.row}>
+      {isTimeMode ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>TIME & PACE</Text>
+          <View style={styles.row}>
+            <InputRow
+              label="Hours"
+              value={hours}
+              onChangeText={setHours}
+              keyboardType="numeric"
+            />
+            <InputRow
+              label="Minutes"
+              value={minutes}
+              onChangeText={setMinutes}
+              keyboardType="numeric"
+            />
+          </View>
           <InputRow
-            label="Hours"
-            value={hours}
-            onChangeText={setHours}
-            keyboardType="numeric"
-          />
-          <InputRow
-            label="Minutes"
-            value={minutes}
-            onChangeText={setMinutes}
-            keyboardType="numeric"
+            label="Target pace (min/km)"
+            value={pace}
+            onChangeText={setPace}
+            keyboardType={Platform.select({
+              ios: "numbers-and-punctuation",
+              default: "default",
+            })}
+            hint={distanceHint}
+            error={paceError}
+            autoCapitalize="none"
+            autoCorrect={false}
           />
         </View>
-        <InputRow
-          label="Target pace (min/km)"
-          value={pace}
-          onChangeText={setPace}
-          keyboardType={Platform.select({
-            ios: "numbers-and-punctuation",
-            default: "default",
-          })}
-          hint={distanceHint}
-          error={paceError}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </View>
+      ) : (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>DISTANCE</Text>
+          <InputRow
+            label="Distance (km)"
+            value={distanceKm}
+            onChangeText={setDistanceKm}
+            keyboardType="decimal-pad"
+            error={distanceError}
+          />
+        </View>
+      )}
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>SURFACE</Text>
@@ -309,6 +381,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#6b7280",
     letterSpacing: 0.5,
+  },
+  goalRow: {
+    flexDirection: "row",
+    gap: 8,
   },
   row: {
     flexDirection: "row",

@@ -49,13 +49,23 @@ export function ResultsScreen({ navigation, route }: Props) {
 
         <View style={styles.filterRow}>
           <View style={styles.filterChip}>
-            <Text style={styles.filterText}>~{params.timeMinutes} min</Text>
+            <Text style={styles.filterText}>
+              ~{params.targetDistanceKm.toFixed(1)} km
+            </Text>
           </View>
           <View style={styles.filterChip}>
-            <Text style={styles.filterText}>Mixed</Text>
+            <Text style={styles.filterText}>
+              {params.goalMode === "distance"
+                ? "Distance goal"
+                : `~${Math.round(params.timeMinutes ?? 0)} min`}
+            </Text>
           </View>
           <View style={styles.filterChip}>
-            <Text style={styles.filterText}>Circular</Text>
+            <Text style={styles.filterText}>
+              {params.paceMinPerKm
+                ? `Pace ${params.paceMinPerKm.toFixed(2)}`
+                : "Pace optional"}
+            </Text>
           </View>
         </View>
 

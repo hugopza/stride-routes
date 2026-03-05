@@ -8,8 +8,10 @@ import type { RoutesStackParamList } from "./types";
 const Stack = createNativeStackNavigator<RoutesStackParamList>();
 
 const defaultParams = {
+  goalMode: "time" as const,
   timeMinutes: 45,
   paceMinPerKm: 5.5,
+  targetDistanceKm: 45 / 5.5,
 };
 
 export function RoutesStack() {

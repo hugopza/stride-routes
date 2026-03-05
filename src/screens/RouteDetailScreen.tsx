@@ -9,9 +9,9 @@ import {
   View,
 } from "react-native";
 
+import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import type { RoutesStackParamList } from "../navigation/types";
-import { Button } from "../components/Button";
 
 type Props = NativeStackScreenProps<RoutesStackParamList, "RouteDetail">;
 
@@ -103,12 +103,6 @@ export function RouteDetailScreen({ navigation, route }: Props) {
             variant="outline"
             style={{ flex: 1 }}
             onPress={() => Alert.alert("Save", "Saved.")}
-          />
-          <Button
-            label="Start"
-            variant="outline"
-            style={{ flex: 1 }}
-            onPress={() => Alert.alert("Start", "Navigation started.")}
           />
         </View>
 
