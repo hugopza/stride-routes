@@ -199,7 +199,7 @@ function toRoute(
 }
 
 export class FakeRouteProvider implements RouteProvider {
-  generateRoutes(params: RouteParams): CandidateRoute[] {
+  private generateRoutesSync(params: RouteParams): CandidateRoute[] {
     const fallbackPace = 6;
     const pace =
       params.paceMinPerKm && params.paceMinPerKm > 0
@@ -237,5 +237,13 @@ export class FakeRouteProvider implements RouteProvider {
       toRoute("route-2", "City Park Circuit", d2, pace, 58, p2),
       toRoute("route-3", "Hill Tempo Route", d3, pace, 91, p3),
     ];
+  }
+
+  async generateRoutes(params: RouteParams): Promise<CandidateRoute[]> {
+    return this.generateRoutesSync(params);
+  }
+
+  generatePreviewRoutes(params: RouteParams): CandidateRoute[] {
+    return this.generateRoutesSync(params);
   }
 }

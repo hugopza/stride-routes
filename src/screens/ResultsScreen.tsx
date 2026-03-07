@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useLayoutEffect, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Button } from "../components/Button";
 import { RouteCard } from "../components/RouteCard";
@@ -36,9 +36,14 @@ export function ResultsScreen({ navigation, route }: Props) {
   const onRegenerate = () => {
     setIsRegenerating(true);
 
-    setTimeout(() => {
-      setList(routeGenerationService.generateRoutes(params));
-      setIsRegenerating(false);
+    setTimeout(async () => {
+      try {
+        setList(await routeGenerationService.generateRoutes(params));
+      } catch {
+        Alert.alert("Route error", "Could not regenerate routes right now.");
+      } finally {
+        setIsRegenerating(false);
+      }
     }, 180);
   };
 
