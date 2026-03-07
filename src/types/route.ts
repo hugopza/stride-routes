@@ -3,6 +3,14 @@ export type RouteParams = {
   timeMinutes?: number;
   paceMinPerKm?: number;
   targetDistanceKm: number;
+  circular?: boolean;
+  startCoordinate?: RouteCoordinate;
+  endCoordinate?: RouteCoordinate;
+};
+
+export type RouteCoordinate = {
+  latitude: number;
+  longitude: number;
 };
 
 export type CandidateRoute = {
@@ -11,4 +19,5 @@ export type CandidateRoute = {
   distanceKm: number;
   estimatedDurationMinutes: number;
   elevationGainM: number;
+  polyline: RouteCoordinate[];
 };

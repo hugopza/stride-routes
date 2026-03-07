@@ -1,5 +1,5 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Alert,
   Pressable,
@@ -8,9 +8,11 @@ import {
   Text,
   View,
 } from "react-native";
+import MapView, { Marker, Polyline } from "react-native-maps";
 
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
+import { exportPolylineAsGpx } from "../lib/gpx";
 import type { RoutesStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<RoutesStackParamList, "RouteDetail">;
@@ -18,6 +20,11 @@ type Props = NativeStackScreenProps<RoutesStackParamList, "RouteDetail">;
 export function RouteDetailScreen({ navigation, route }: Props) {
   const { route: selectedRoute } = route.params;
   const [feedback, setFeedback] = useState<string[]>([]);
+  const [isExporting, setIsExporting] = useState(false);
+  const mapRef = useRef<MapView | null>(null);
+  const polyline = selectedRoute.polyline ?? [];
+  const start = polyline[0];
+  const end = polyline[polyline.length - 1];
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -33,6 +40,21 @@ export function RouteDetailScreen({ navigation, route }: Props) {
     });
   }, [navigation, selectedRoute.name]);
 
+  useEffect(() => {
+    if (polyline.length < 2) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(polyline, {
+        edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
+        animated: true,
+      });
+    }, 120);
+
+    return () => clearTimeout(timeout);
+  }, [polyline]);
+
   const toggleFeedback = (f: string) => {
     if (feedback.includes(f)) {
       setFeedback(feedback.filter((item) => item !== f));
@@ -41,25 +63,45 @@ export function RouteDetailScreen({ navigation, route }: Props) {
     }
   };
 
+  const onExportGpx = async () => {
+    if (polyline.length < 2) {
+      Alert.alert("Export GPX", "This route cannot be exported yet.");
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      await exportPolylineAsGpx(selectedRoute.name, polyline);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to export GPX. Please try again.";
+      Alert.alert("Export GPX", message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.mapCard}>
-          <View style={styles.mapPlaceholder}>
-            <Text style={styles.mapText}>Map placeholder</Text>
-            <View style={styles.fakeLine1} />
-            <View style={styles.fakeLine2} />
-            <View style={styles.fakePointStart} />
-            <View style={styles.fakePointEnd} />
-          </View>
-          <View style={styles.mapChips}>
-            <View style={styles.mapChip}>
-              <Text style={styles.mapChipText}>START</Text>
+          {polyline.length > 1 ? (
+            <MapView ref={mapRef} style={styles.map}>
+              <Polyline
+                coordinates={polyline}
+                strokeColor="#0f172a"
+                strokeWidth={4}
+              />
+              {start ? <Marker coordinate={start} title="Start" /> : null}
+              {end ? <Marker coordinate={end} title="End" /> : null}
+            </MapView>
+          ) : (
+            <View style={styles.mapPlaceholder}>
+              <Text style={styles.mapText}>Route preview unavailable</Text>
             </View>
-            <View style={styles.mapChip}>
-              <Text style={styles.mapChipText}>END</Text>
-            </View>
-          </View>
+          )}
         </View>
 
         <View style={styles.statsCard}>
@@ -93,7 +135,8 @@ export function RouteDetailScreen({ navigation, route }: Props) {
 
         <Button
           label="Download GPX"
-          onPress={() => Alert.alert("Download GPX", "GPX export coming soon.")}
+          onPress={onExportGpx}
+          loading={isExporting}
           style={styles.actionButton}
         />
 
@@ -150,74 +193,21 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     marginBottom: 16,
   },
+  map: {
+    height: 240,
+    width: "100%",
+  },
   mapPlaceholder: {
-    height: 200,
+    height: 240,
     backgroundColor: "#f1f5f9",
     alignItems: "center",
     justifyContent: "center",
-    position: "relative",
+    paddingHorizontal: 16,
   },
   mapText: {
     color: "#94a3b8",
     fontSize: 16,
     fontWeight: "500",
-    zIndex: 10,
-  },
-  fakeLine1: {
-    position: "absolute",
-    width: 60,
-    height: 4,
-    backgroundColor: "#cbd5e1",
-    transform: [{ rotate: "45deg" }],
-    left: "35%",
-    top: "40%",
-  },
-  fakeLine2: {
-    position: "absolute",
-    width: 100,
-    height: 4,
-    backgroundColor: "#cbd5e1",
-    transform: [{ rotate: "-45deg" }],
-    left: "45%",
-    top: "35%",
-  },
-  fakePointStart: {
-    position: "absolute",
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: "#94a3b8",
-    left: "25%",
-    top: "55%",
-  },
-  fakePointEnd: {
-    position: "absolute",
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: "#94a3b8",
-    right: "25%",
-    top: "15%",
-  },
-  mapChips: {
-    flexDirection: "row",
-    gap: 8,
-    position: "absolute",
-    bottom: 12,
-    left: 12,
-  },
-  mapChip: {
-    backgroundColor: "#fff",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  mapChipText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#334155",
   },
   statsCard: {
     borderWidth: 1,
