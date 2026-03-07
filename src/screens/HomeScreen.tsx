@@ -13,8 +13,8 @@ import {
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { InputRow } from "../components/InputRow";
-import { generateRoutes } from "../lib/generate-routes";
 import type { RootTabParamList } from "../navigation/types";
+import { routeGenerationService } from "../services/routeGenerationService";
 import type { RouteParams } from "../types/route";
 
 type Props = BottomTabScreenProps<RootTabParamList, "Explore">;
@@ -168,7 +168,7 @@ export function HomeScreen({ navigation }: Props) {
     setIsGenerating(true);
 
     setTimeout(() => {
-      const routes = generateRoutes(params);
+      const routes = routeGenerationService.generateRoutes(params);
 
       navigation.navigate("Routes", {
         screen: "Results",
@@ -353,7 +353,7 @@ export function HomeScreen({ navigation }: Props) {
 
       <View style={styles.footer}>
         <Button
-          label="Generate 5 routes"
+          label="Generate routes"
           onPress={onGenerate}
           disabled={!isFormValid}
           loading={isGenerating}

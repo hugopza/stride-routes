@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Button } from "../components/Button";
 import { RouteCard } from "../components/RouteCard";
-import { generateRoutes } from "../lib/generate-routes";
+import { routeGenerationService } from "../services/routeGenerationService";
 import type { RoutesStackParamList } from "../navigation/types";
 import type { CandidateRoute } from "../types/route";
 
@@ -37,7 +37,7 @@ export function ResultsScreen({ navigation, route }: Props) {
     setIsRegenerating(true);
 
     setTimeout(() => {
-      setList(generateRoutes(params));
+      setList(routeGenerationService.generateRoutes(params));
       setIsRegenerating(false);
     }, 180);
   };

@@ -1,7 +1,7 @@
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
-import { generateRoutes } from "../lib/generate-routes";
 import { ResultsScreen } from "../screens/ResultsScreen";
+import { routeGenerationService } from "../services/routeGenerationService";
 import { RouteDetailScreen } from "../screens/RouteDetailScreen";
 import type { RoutesStackParamList } from "./types";
 
@@ -31,7 +31,7 @@ export function RoutesStack() {
         options={{ title: "Routes" }}
         initialParams={{
           params: defaultParams,
-          routes: generateRoutes(defaultParams),
+          routes: routeGenerationService.generateRoutes(defaultParams),
         }}
       />
       <Stack.Screen name="RouteDetail" component={RouteDetailScreen} />
