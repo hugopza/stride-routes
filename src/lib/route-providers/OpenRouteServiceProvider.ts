@@ -12,11 +12,42 @@ type OrsFeature = {
       duration?: number;
       ascent?: number;
     };
+    extras?: {
+      surface?: OrsExtraInfo;
+      waytype?: OrsExtraInfo;
+      waytypes?: OrsExtraInfo;
+      waycategory?: OrsExtraInfo;
+      waycategories?: OrsExtraInfo;
+    };
   };
 };
 
 type OrsResponse = {
   features?: OrsFeature[];
+};
+
+type OrsExtraSummaryItem = {
+  value?: number | string;
+  distance?: number;
+  amount?: number;
+};
+
+type OrsExtraInfo = {
+  summary?: OrsExtraSummaryItem[];
+};
+
+type SurfacePreference = "asphalt" | "mixed" | "trail";
+
+type SurfaceProfile = {
+  asphaltRatio: number;
+  nonAsphaltRatio: number;
+  trailRatio: number;
+  majorRoadRatio: number;
+};
+
+type MappedRoute = {
+  route: CandidateRoute;
+  surfaceProfile: SurfaceProfile;
 };
 
 type EndpointCandidate = {
@@ -27,10 +58,13 @@ type EndpointCandidate = {
 
 type EvaluatedCandidate = {
   route: CandidateRoute;
+  surfaceProfile: SurfaceProfile;
   endpoint: RouteCoordinate;
   bearingDeg: number;
   radiusKm: number;
   score: number;
+  hardScore: number;
+  preferenceScore: number;
 };
 
 type CircularLoopCandidate = {
@@ -39,6 +73,8 @@ type CircularLoopCandidate = {
   baseBearing: number;
   radiusKm: number;
 };
+
+type RouteMode = "directed" | "start-only-noncircular" | "start-only-circular";
 
 const KM_PER_LAT_DEGREE = 111.32;
 
@@ -85,6 +121,21 @@ function mapFeatureToCandidateRoute(
   };
 }
 
+function normalizeSurfacePreference(surface: RouteParams["surface"]): SurfacePreference {
+  const normalized = String(surface ?? "mixed").trim().toLowerCase();
+  if (normalized === "asphalt") {
+    return "asphalt";
+  }
+  if (normalized === "trail") {
+    return "trail";
+  }
+  return "mixed";
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 export class OpenRouteServiceProvider implements RouteProvider {
   private readonly endpoint =
     "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
@@ -107,6 +158,208 @@ export class OpenRouteServiceProvider implements RouteProvider {
       longitude:
         origin.longitude + eastKm / this.kmPerLonDegree(origin.latitude),
     };
+  }
+
+  private classifySurfaceValue(value: number | string): "asphalt" | "trail" | "other" {
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (!Number.isNaN(numeric)) {
+      // ORS surface IDs (simplified MVP buckets).
+      if ([1, 3, 4, 5].includes(numeric)) {
+        return "asphalt";
+      }
+      if ([2, 6, 7, 8, 9, 10, 11, 12].includes(numeric)) {
+        return "trail";
+      }
+      return "other";
+    }
+
+    const text = String(value).toLowerCase();
+    if (
+      text.includes("asphalt") ||
+      text.includes("paved") ||
+      text.includes("concrete") ||
+      text.includes("sett")
+    ) {
+      return "asphalt";
+    }
+    if (
+      text.includes("trail") ||
+      text.includes("track") ||
+      text.includes("path") ||
+      text.includes("gravel") ||
+      text.includes("unpaved") ||
+      text.includes("dirt") ||
+      text.includes("ground")
+    ) {
+      return "trail";
+    }
+    return "other";
+  }
+
+  private classifyWaytypeValue(value: number | string): "asphalt" | "trail" | "other" {
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (!Number.isNaN(numeric)) {
+      // ORS waytype IDs (simplified MVP buckets).
+      if ([1, 2, 3].includes(numeric)) {
+        return "asphalt";
+      }
+      if ([4, 5, 7, 8].includes(numeric)) {
+        return "trail";
+      }
+      return "other";
+    }
+    return "other";
+  }
+
+  private isMajorWaycategory(value: number | string): boolean {
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (!Number.isNaN(numeric)) {
+      // waycategory is a bit field; bit 1 means "Highway".
+      // Example: 97 = 64 (paved) + 32 (tunnel) + 1 (highway).
+      return numeric > 0 && (numeric & 1) === 1;
+    }
+
+    const text = String(value).toLowerCase();
+    return (
+      text.includes("motorway") ||
+      text.includes("trunk") ||
+      text.includes("primary") ||
+      text.includes("state_road") ||
+      text.includes("county_road")
+    );
+  }
+
+  private summarizeExtra(
+    info: OrsExtraInfo | undefined,
+    classifier: (value: number | string) => "asphalt" | "trail" | "other",
+  ): { asphalt: number; trail: number; other: number } | null {
+    const summary = info?.summary ?? [];
+    if (summary.length === 0) {
+      return null;
+    }
+
+    let asphalt = 0;
+    let trail = 0;
+    let other = 0;
+
+    for (const item of summary) {
+      const value = item.value;
+      if (value === undefined) {
+        continue;
+      }
+      // ORS summary usually provides distance in meters; amount is fallback percentage.
+      const weight =
+        typeof item.distance === "number"
+          ? item.distance
+          : typeof item.amount === "number"
+            ? item.amount
+            : 0;
+
+      const bucket = classifier(value);
+      if (bucket === "asphalt") {
+        asphalt += weight;
+      } else if (bucket === "trail") {
+        trail += weight;
+      } else {
+        other += weight;
+      }
+    }
+
+    const total = asphalt + trail + other;
+    if (total <= 0) {
+      return null;
+    }
+
+    return {
+      asphalt: asphalt / total,
+      trail: trail / total,
+      other: other / total,
+    };
+  }
+
+  private getSurfaceProfile(feature: OrsFeature): SurfaceProfile {
+    const extras = feature.properties?.extras;
+    const surface = this.summarizeExtra(
+      extras?.surface,
+      this.classifySurfaceValue.bind(this),
+    );
+    const waytype = this.summarizeExtra(
+      extras?.waytype ?? extras?.waytypes,
+      this.classifyWaytypeValue.bind(this),
+    );
+    const waycategorySummary = extras?.waycategory?.summary ?? extras?.waycategories?.summary ?? [];
+    let majorRoadWeight = 0;
+    let totalWaycategoryWeight = 0;
+    const waycategoryDebug: Array<{
+      value: number | string;
+      major: boolean;
+      weight: number;
+    }> = [];
+    for (const item of waycategorySummary) {
+      const value = item.value;
+      if (value === undefined) {
+        continue;
+      }
+      const weight =
+        typeof item.distance === "number"
+          ? item.distance
+          : typeof item.amount === "number"
+            ? item.amount
+            : 0;
+      totalWaycategoryWeight += weight;
+      const isMajor = this.isMajorWaycategory(value);
+      waycategoryDebug.push({ value, major: isMajor, weight });
+      if (isMajor) {
+        majorRoadWeight += weight;
+      }
+    }
+    const majorRoadRatio =
+      totalWaycategoryWeight > 0 ? majorRoadWeight / totalWaycategoryWeight : 0.25;
+
+    console.log("[ors] waycategory-summary", {
+      rawValues: waycategorySummary.map((item) => item.value),
+      buckets: waycategoryDebug,
+      majorRoadRatio: Number(majorRoadRatio.toFixed(3)),
+    });
+
+    // Prefer explicit surface info, with waytype as secondary signal.
+    const asphaltRatio =
+      surface && waytype
+        ? surface.asphalt * 0.7 + waytype.asphalt * 0.3
+        : surface
+          ? surface.asphalt
+          : waytype
+            ? waytype.asphalt
+            : 0.5;
+
+    const trailRatio =
+      surface && waytype
+        ? surface.trail * 0.7 + waytype.trail * 0.3
+        : surface
+          ? surface.trail
+          : waytype
+            ? waytype.trail
+            : 0.35;
+
+    return {
+      asphaltRatio: clamp01(asphaltRatio),
+      nonAsphaltRatio: clamp01(1 - asphaltRatio),
+      trailRatio: clamp01(trailRatio),
+      majorRoadRatio: clamp01(majorRoadRatio),
+    };
+  }
+
+  private surfacePreferencePenalty(
+    profile: SurfaceProfile,
+    preference: SurfacePreference,
+  ): number {
+    if (preference === "mixed") {
+      return 0;
+    }
+    if (preference === "asphalt") {
+      return (1 - profile.asphaltRatio) * 2.6 + profile.trailRatio * 0.9;
+    }
+    return (1 - profile.nonAsphaltRatio) * 2.6 + profile.asphaltRatio * 0.9;
   }
 
   private async requestDirections(
@@ -133,6 +386,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           [start.longitude, start.latitude],
           [end.longitude, end.latitude],
         ],
+        extra_info: ["surface", "waytype", "waycategory"],
         ...(allowAlternatives
           ? {
               alternative_routes: {
@@ -164,16 +418,32 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private mapFeaturesToRoutes(
     data: OrsResponse,
     pace: number,
-  ): CandidateRoute[] {
+  ): MappedRoute[] {
     const mapped = (data.features ?? [])
-      .map((feature, index) => mapFeatureToCandidateRoute(feature, index, pace))
-      .filter((route): route is CandidateRoute => route !== null);
+      .map((feature, index) => {
+        const route = mapFeatureToCandidateRoute(feature, index, pace);
+        if (!route) {
+          return null;
+        }
+        return {
+          route,
+          surfaceProfile: this.getSurfaceProfile(feature),
+        };
+      })
+      .filter((item): item is MappedRoute => item !== null);
 
     console.log("[ors] mapped", {
       routes: mapped.length,
-      pointsPerRoute: mapped.map((route) => route.polyline.length),
-      firstRouteStart: mapped[0]?.polyline[0],
-      firstRouteEnd: mapped[0]?.polyline[mapped[0].polyline.length - 1],
+      pointsPerRoute: mapped.map((item) => item.route.polyline.length),
+      firstRouteStart: mapped[0]?.route.polyline[0],
+      firstRouteEnd:
+        mapped[0]?.route.polyline[mapped[0].route.polyline.length - 1],
+      asphaltRatios: mapped.map((item) =>
+        Number(item.surfaceProfile.asphaltRatio.toFixed(2)),
+      ),
+      majorRoadRatios: mapped.map((item) =>
+        Number(item.surfaceProfile.majorRoadRatio.toFixed(2)),
+      ),
     });
 
     return mapped;
@@ -209,12 +479,50 @@ export class OpenRouteServiceProvider implements RouteProvider {
     return earthRadiusKm * c;
   }
 
-  private scoreCandidate(route: CandidateRoute, targetDistanceKm: number): number {
+  private scoreStartOnlyNonCircular(
+    route: CandidateRoute,
+    profile: SurfaceProfile,
+    targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
+  ): { hard: number; preference: number; total: number } {
     const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
     const normalizedDistanceError =
       diffKm / Math.max(0.5, targetDistanceKm);
+    const outlierToleranceKm = Math.max(1.0, targetDistanceKm * 0.2);
+    const outlierPenalty =
+      diffKm > outlierToleranceKm
+        ? ((diffKm - outlierToleranceKm) / Math.max(0.5, outlierToleranceKm)) * 4.5
+        : 0;
+    const majorRoadPenalty = profile.majorRoadRatio * 5.2;
     const geometryPenalty = route.polyline.length >= 20 ? 0 : 0.35;
-    return normalizedDistanceError * 2.8 + diffKm * 0.2 + geometryPenalty;
+    const hard =
+      normalizedDistanceError * 4 +
+      diffKm * 0.4 +
+      outlierPenalty +
+      majorRoadPenalty +
+      geometryPenalty;
+    const preference = this.surfacePreferencePenalty(profile, surfacePreference);
+    return { hard, preference, total: hard + preference * 0.22 };
+  }
+
+  private scoreDirected(
+    route: CandidateRoute,
+    profile: SurfaceProfile,
+    targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
+  ): { hard: number; preference: number; total: number } {
+    const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
+    const normalizedDistanceError =
+      diffKm / Math.max(0.5, targetDistanceKm);
+    const majorRoadPenalty = profile.majorRoadRatio * 6.8;
+    const geometryPenalty = route.polyline.length >= 20 ? 0 : 0.35;
+    const hard =
+      majorRoadPenalty +
+      normalizedDistanceError * 1.4 +
+      diffKm * 0.18 +
+      geometryPenalty;
+    const preference = this.surfacePreferencePenalty(profile, surfacePreference);
+    return { hard, preference, total: hard + preference * 0.18 };
   }
 
   private computePolygonAreaKm2(points: RouteCoordinate[]): number {
@@ -242,9 +550,11 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
   private scoreCircularCandidate(
     route: CandidateRoute,
+    profile: SurfaceProfile,
     start: RouteCoordinate,
     targetDistanceKm: number,
-  ): number {
+    surfacePreference: SurfacePreference,
+  ): { hard: number; preference: number; total: number } {
     const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
     const normalizedDistanceError =
       diffKm / Math.max(0.5, targetDistanceKm);
@@ -264,15 +574,17 @@ export class OpenRouteServiceProvider implements RouteProvider {
       diffKm > toleranceKm
         ? ((diffKm - toleranceKm) / Math.max(0.5, toleranceKm)) * 4
         : 0;
-
-    return (
+    const majorRoadPenalty = profile.majorRoadRatio * 4.6;
+    const hard =
       normalizedDistanceError * 4.2 +
       diffKm * 0.65 +
       outlierPenalty +
+      majorRoadPenalty +
       closurePenalty * 0.9 +
       loopShapePenalty * 0.8 +
-      geometryPenalty
-    );
+      geometryPenalty;
+    const preference = this.surfacePreferencePenalty(profile, surfacePreference);
+    return { hard, preference, total: hard + preference * 0.24 };
   }
 
   private createRefinementEndpoints(
@@ -314,10 +626,17 @@ export class OpenRouteServiceProvider implements RouteProvider {
     scored: EvaluatedCandidate[],
     targetDistanceKm: number,
   ): CandidateRoute[] {
+    const bestHard = scored[0]?.hardScore ?? Number.POSITIVE_INFINITY;
+    const qualityThreshold = bestHard + 1.4;
+    const qualityFiltered = scored.filter(
+      (item) => item.hardScore <= qualityThreshold,
+    );
+    const ranked = qualityFiltered.length > 0 ? qualityFiltered : scored;
+
     const selected: EvaluatedCandidate[] = [];
     const minSeparationKm = Math.max(0.25, Math.min(1.5, targetDistanceKm * 0.15));
 
-    for (const candidate of scored) {
+    for (const candidate of ranked) {
       const candidateEnd =
         candidate.route.polyline[candidate.route.polyline.length - 1];
       const isTooClose = selected.some((chosen) => {
@@ -333,17 +652,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       }
     }
 
-    // Fill remaining slots with best-scored routes if diversity was too strict.
-    if (selected.length < 3) {
-      for (const candidate of scored) {
-        if (!selected.includes(candidate)) {
-          selected.push(candidate);
-        }
-        if (selected.length === 3) {
-          break;
-        }
-      }
-    }
+    // Prefer fewer quality routes over backfilling weak options.
 
     return selected.map((item, index) => ({
       ...item.route,
@@ -360,7 +669,12 @@ export class OpenRouteServiceProvider implements RouteProvider {
     const acceptable = scored.filter(
       (item) => Math.abs(item.route.distanceKm - targetDistanceKm) <= strictToleranceKm,
     );
-    const ranked = acceptable.length > 0 ? acceptable : scored;
+    const bestHard = (acceptable[0] ?? scored[0])?.hardScore ?? Number.POSITIVE_INFINITY;
+    const qualityThreshold = bestHard + 1.5;
+    const qualityFiltered = (acceptable.length > 0 ? acceptable : scored).filter(
+      (item) => item.hardScore <= qualityThreshold,
+    );
+    const ranked = qualityFiltered.length > 0 ? qualityFiltered : acceptable.length > 0 ? acceptable : scored;
 
     const selected: EvaluatedCandidate[] = [];
     const minSeparationKm = Math.max(0.18, Math.min(0.9, targetDistanceKm * 0.08));
@@ -391,6 +705,37 @@ export class OpenRouteServiceProvider implements RouteProvider {
       id: `ors-circular-${index + 1}`,
       name: index === 0 ? "OpenStreetMap Loop" : `Loop Alternative ${index + 1}`,
     }));
+  }
+
+  private computeModeScore(
+    mode: RouteMode,
+    route: CandidateRoute,
+    profile: SurfaceProfile,
+    targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
+    start?: RouteCoordinate,
+  ): { hard: number; preference: number; total: number } {
+    if (mode === "directed") {
+      return this.scoreDirected(route, profile, targetDistanceKm, surfacePreference);
+    }
+    if (mode === "start-only-circular") {
+      if (!start) {
+        return this.scoreDirected(route, profile, targetDistanceKm, surfacePreference);
+      }
+      return this.scoreCircularCandidate(
+        route,
+        profile,
+        start,
+        targetDistanceKm,
+        surfacePreference,
+      );
+    }
+    return this.scoreStartOnlyNonCircular(
+      route,
+      profile,
+      targetDistanceKm,
+      surfacePreference,
+    );
   }
 
   private generateCircularLoopCandidates(
@@ -463,6 +808,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           [via2.longitude, via2.latitude],
           [start.longitude, start.latitude],
         ],
+        extra_info: ["surface", "waytype", "waycategory"],
       }),
     });
 
@@ -482,6 +828,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     pace: number,
     targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
     candidates: CircularLoopCandidate[],
   ): Promise<EvaluatedCandidate[]> {
     const results: EvaluatedCandidate[] = [];
@@ -495,13 +842,42 @@ export class OpenRouteServiceProvider implements RouteProvider {
         );
         const mapped = this.mapFeaturesToRoutes(data, pace);
         if (mapped.length > 0) {
-          const route = mapped[0];
+          const best = [...mapped].sort(
+            (a, b) =>
+              this.computeModeScore(
+                "start-only-circular",
+                a.route,
+                a.surfaceProfile,
+                targetDistanceKm,
+                surfacePreference,
+                start,
+              ).total -
+              this.computeModeScore(
+                "start-only-circular",
+                b.route,
+                b.surfaceProfile,
+                targetDistanceKm,
+                surfacePreference,
+                start,
+              ).total,
+          )[0];
+          const score = this.computeModeScore(
+            "start-only-circular",
+            best.route,
+            best.surfaceProfile,
+            targetDistanceKm,
+            surfacePreference,
+            start,
+          );
           results.push({
-            route,
-            endpoint: route.polyline[route.polyline.length - 1],
+            route: best.route,
+            surfaceProfile: best.surfaceProfile,
+            endpoint: best.route.polyline[best.route.polyline.length - 1],
             bearingDeg: candidate.baseBearing,
             radiusKm: candidate.radiusKm,
-            score: this.scoreCircularCandidate(route, start, targetDistanceKm),
+            score: score.total,
+            hardScore: score.hard,
+            preferenceScore: score.preference,
           });
         }
       } catch (error) {
@@ -519,6 +895,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     pace: number,
     targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
     candidates: EndpointCandidate[],
   ): Promise<EvaluatedCandidate[]> {
     const results: EvaluatedCandidate[] = [];
@@ -528,13 +905,39 @@ export class OpenRouteServiceProvider implements RouteProvider {
         const data = await this.requestDirections(start, candidate.endpoint, false);
         const mapped = this.mapFeaturesToRoutes(data, pace);
         if (mapped.length > 0) {
-          const route = mapped[0];
+          const best = [...mapped].sort(
+            (a, b) =>
+              this.computeModeScore(
+                "start-only-noncircular",
+                a.route,
+                a.surfaceProfile,
+                targetDistanceKm,
+                surfacePreference,
+              ).total -
+              this.computeModeScore(
+                "start-only-noncircular",
+                b.route,
+                b.surfaceProfile,
+                targetDistanceKm,
+                surfacePreference,
+              ).total,
+          )[0];
+          const score = this.computeModeScore(
+            "start-only-noncircular",
+            best.route,
+            best.surfaceProfile,
+            targetDistanceKm,
+            surfacePreference,
+          );
           results.push({
-            route,
+            route: best.route,
+            surfaceProfile: best.surfaceProfile,
             endpoint: candidate.endpoint,
             bearingDeg: candidate.bearingDeg,
             radiusKm: candidate.radiusKm,
-            score: this.scoreCandidate(route, targetDistanceKm),
+            score: score.total,
+            hardScore: score.hard,
+            preferenceScore: score.preference,
           });
         }
       } catch (error) {
@@ -552,12 +955,14 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     targetDistanceKm: number,
     pace: number,
+    surfacePreference: SurfacePreference,
   ): Promise<CandidateRoute[]> {
     const initialCandidates = this.generateCandidateEndpoints(start, targetDistanceKm);
     const initialResults = await this.evaluateCandidates(
       start,
       pace,
       targetDistanceKm,
+      surfacePreference,
       initialCandidates,
     );
     const topInitial = [...initialResults]
@@ -573,6 +978,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       start,
       pace,
       targetDistanceKm,
+      surfacePreference,
       refinementCandidates,
     );
 
@@ -597,12 +1003,14 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     targetDistanceKm: number,
     pace: number,
+    surfacePreference: SurfacePreference,
   ): Promise<CandidateRoute[]> {
     const initial = this.generateCircularLoopCandidates(start, targetDistanceKm);
     const initialResults = await this.evaluateCircularCandidates(
       start,
       pace,
       targetDistanceKm,
+      surfacePreference,
       initial,
     );
     const bestInitial = [...initialResults]
@@ -618,6 +1026,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       start,
       pace,
       targetDistanceKm,
+      surfacePreference,
       refinement,
     );
 
@@ -646,6 +1055,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     if (!params.startCoordinate) {
       throw new Error("Missing start coordinate for ORS request.");
     }
+    const surfacePreference = normalizeSurfacePreference(params.surface);
     const pace = params.paceMinPerKm && params.paceMinPerKm > 0 ? params.paceMinPerKm : 6;
 
     const mapped = params.endCoordinate
@@ -657,16 +1067,37 @@ export class OpenRouteServiceProvider implements RouteProvider {
           ),
           pace,
         )
+          .map((item) => ({
+            ...item,
+            score: this.computeModeScore(
+              "directed",
+              item.route,
+              item.surfaceProfile,
+              params.targetDistanceKm,
+              surfacePreference,
+            ),
+          }))
+          .sort(
+            (a, b) =>
+              a.score.total - b.score.total,
+          )
+          .filter(
+            (item, _, all) => item.score.hard <= (all[0]?.score.hard ?? item.score.hard) + 1.2,
+          )
+          .slice(0, 3)
+          .map((item) => item.route)
       : params.circular
         ? await this.generateCircularFromStartOnly(
             params.startCoordinate,
             params.targetDistanceKm,
             pace,
+            surfacePreference,
           )
         : await this.generateFromStartOnly(
             params.startCoordinate,
             params.targetDistanceKm,
             pace,
+            surfacePreference,
           );
 
     if (mapped.length === 0) {

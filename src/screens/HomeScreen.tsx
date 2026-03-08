@@ -1,12 +1,11 @@
 import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from "react-native";
@@ -28,13 +27,18 @@ type RouteParamsWithUi = RouteParams & {
   end?: string;
   surface: string;
   intensity: string;
-  safety: string;
   waypoints: string[];
+};
+
+const DEFAULT_REGION = {
+  latitude: 40.4168,
+  longitude: -3.7038,
+  latitudeDelta: 0.06,
+  longitudeDelta: 0.06,
 };
 
 function parsePace(raw: string): number | null {
   const value = raw.trim();
-
   if (!value) {
     return null;
   }
@@ -59,12 +63,7 @@ function parsePace(raw: string): number | null {
 
   const normalized = value.replace(",", ".");
   const parsed = Number.parseFloat(normalized);
-
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    return null;
-  }
-
-  return parsed;
+  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
 }
 
 function parseDistance(raw: string): number | null {
@@ -74,17 +73,12 @@ function parseDistance(raw: string): number | null {
   }
 
   const parsed = Number.parseFloat(normalized);
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    return null;
-  }
-
-  return parsed;
+  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
 }
 
 function haversineKm(a: RouteCoordinate, b: RouteCoordinate): number {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const earthRadiusKm = 6371;
-
   const dLat = toRad(b.latitude - a.latitude);
   const dLon = toRad(b.longitude - a.longitude);
   const lat1 = toRad(a.latitude);
@@ -99,32 +93,40 @@ function haversineKm(a: RouteCoordinate, b: RouteCoordinate): number {
 }
 
 export function HomeScreen({ navigation }: Props) {
+  const mapRef = useRef<MapView | null>(null);
+
   const [goalMode, setGoalMode] = useState<"time" | "distance">("time");
+  const [routeType, setRouteType] = useState<"point_to_point" | "circular">(
+    "point_to_point",
+  );
+
   const [hours, setHours] = useState("0");
   const [minutes, setMinutes] = useState("45");
   const [distanceKm, setDistanceKm] = useState("8");
   const [pace, setPace] = useState("5:30");
-  const [isCircular, setIsCircular] = useState(true);
+
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [waypoints] = useState<string[]>([]);
   const [surface, setSurface] = useState("Mixed");
   const [intensity, setIntensity] = useState("Balanced");
-  const [safety, setSafety] = useState("Safer streets");
   const [isGenerating, setIsGenerating] = useState(false);
+
   const [startCoordinate, setStartCoordinate] = useState<
     RouteCoordinate | undefined
   >(undefined);
   const [endCoordinate, setEndCoordinate] = useState<
     RouteCoordinate | undefined
   >(undefined);
+
+  const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
   const [selectingPoint, setSelectingPoint] = useState<"start" | "end">(
     "start",
   );
-  const [destinationMode, setDestinationMode] = useState<"direct" | "longer">(
-    "direct",
+  const [userLocation, setUserLocation] = useState<RouteCoordinate | undefined>(
+    undefined,
   );
-  const [extraDistanceKm, setExtraDistanceKm] = useState("2");
+
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const [originSuggestions, setOriginSuggestions] = useState<PlaceSuggestion[]>(
@@ -135,6 +137,34 @@ export function HomeScreen({ navigation }: Props) {
   >([]);
   const [isSearchingOrigin, setIsSearchingOrigin] = useState(false);
   const [isSearchingDestination, setIsSearchingDestination] = useState(false);
+
+  const isCircular = routeType === "circular";
+
+  useEffect(() => {
+    if (isCircular) {
+      setEnd("");
+      setEndCoordinate(undefined);
+      setDestinationSuggestions([]);
+      if (selectingPoint === "end") {
+        setSelectingPoint("start");
+      }
+    }
+  }, [isCircular, selectingPoint]);
+
+  useEffect(() => {
+    navigator.geolocation?.getCurrentPosition?.(
+      (position) => {
+        setUserLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      () => {
+        // Keep silent fallback to default region.
+      },
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 },
+    );
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(async () => {
@@ -157,7 +187,7 @@ export function HomeScreen({ navigation }: Props) {
   useEffect(() => {
     const timer = setTimeout(async () => {
       const query = end.trim();
-      if (query.length < 3) {
+      if (query.length < 3 || isCircular) {
         setDestinationSuggestions([]);
         setIsSearchingDestination(false);
         return;
@@ -170,15 +200,7 @@ export function HomeScreen({ navigation }: Props) {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [end]);
-
-  useEffect(() => {
-    if (isCircular) {
-      setEnd("");
-      setEndCoordinate(undefined);
-      setDestinationSuggestions([]);
-    }
-  }, [isCircular]);
+  }, [end, isCircular]);
 
   const parsedHours = Number(hours) || 0;
   const parsedMinutes = Number(minutes) || 0;
@@ -186,46 +208,18 @@ export function HomeScreen({ navigation }: Props) {
   const normalizedPace = parsePace(pace);
   const normalizedDistance = parseDistance(distanceKm);
 
-  const isTimeMode = goalMode === "time";
-  const isTimeValid = totalMinutes > 0 && normalizedPace !== null;
-  const isDistanceValid = normalizedDistance !== null;
-  const destinationRequested = end.trim().length > 0;
-  const hasDestination = destinationRequested && Boolean(endCoordinate);
-
-  const baseDirectDistanceKm =
+  const directDistanceKm =
     startCoordinate && endCoordinate
       ? Math.max(0.2, haversineKm(startCoordinate, endCoordinate) * 1.2)
       : 0;
-  const parsedExtraDistanceKm = parseDistance(extraDistanceKm);
 
-  const targetDistanceKm = hasDestination
-    ? destinationMode === "longer"
-      ? baseDirectDistanceKm + (parsedExtraDistanceKm ?? 0)
-      : baseDirectDistanceKm
-    : isTimeMode
-      ? isTimeValid && normalizedPace
+  const targetDistanceKm = isCircular
+    ? goalMode === "time"
+      ? totalMinutes > 0 && normalizedPace
         ? totalMinutes / normalizedPace
         : 0
-      : (normalizedDistance ?? 0);
-
-  const distanceHint =
-    !destinationRequested && isTimeMode && targetDistanceKm > 0
-      ? `Estimated distance: ~${targetDistanceKm.toFixed(1)} km`
-      : undefined;
-
-  const paceError =
-    !destinationRequested && isTimeMode
-      ? normalizedPace === null
-        ? "Pace is required. Use mm:ss or decimal format (e.g. 5:30, 5.5, 5,5)."
-        : undefined
-      : pace.trim().length > 0 && normalizedPace === null
-        ? "Invalid pace. Use mm:ss or decimal format."
-        : undefined;
-
-  const distanceError =
-    !destinationRequested && !isTimeMode && !isDistanceValid
-      ? "Distance must be greater than 0."
-      : undefined;
+      : (normalizedDistance ?? 0)
+    : directDistanceKm;
 
   const originError =
     submitAttempted && !startCoordinate
@@ -233,17 +227,52 @@ export function HomeScreen({ navigation }: Props) {
       : undefined;
 
   const destinationError =
-    submitAttempted && destinationRequested && !endCoordinate
-      ? "Destination text was provided, but no destination point was selected."
+    submitAttempted && !isCircular && !endCoordinate
+      ? "Destination is required for point-to-point routes."
       : undefined;
 
-  const extraDistanceError =
+  const paceError =
     submitAttempted &&
-    hasDestination &&
-    destinationMode === "longer" &&
-    parsedExtraDistanceKm === null
-      ? "Extra distance must be greater than 0."
+    isCircular &&
+    goalMode === "time" &&
+    normalizedPace === null
+      ? "Pace is required. Use mm:ss or decimal format."
       : undefined;
+
+  const distanceError =
+    submitAttempted &&
+    isCircular &&
+    goalMode === "distance" &&
+    normalizedDistance === null
+      ? "Distance must be greater than 0."
+      : undefined;
+
+  const isCircularInputValid =
+    goalMode === "time"
+      ? totalMinutes > 0 && normalizedPace !== null
+      : normalizedDistance !== null;
+
+  const isFormValid = Boolean(startCoordinate) && (isCircular
+    ? isCircularInputValid
+    : Boolean(endCoordinate));
+
+  const centerMap = () => {
+    const center = startCoordinate ?? userLocation ?? DEFAULT_REGION;
+    mapRef.current?.animateToRegion({
+      latitude: center.latitude,
+      longitude: center.longitude,
+      latitudeDelta: DEFAULT_REGION.latitudeDelta,
+      longitudeDelta: DEFAULT_REGION.longitudeDelta,
+    });
+  };
+
+  const toggleMapPicker = () => {
+    const next = !isMapPickerOpen;
+    setIsMapPickerOpen(next);
+    if (next) {
+      setTimeout(centerMap, 200);
+    }
+  };
 
   const onSelectOrigin = (suggestion: PlaceSuggestion) => {
     setStart(suggestion.label);
@@ -266,30 +295,20 @@ export function HomeScreen({ navigation }: Props) {
         `Pinned origin (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
       );
       setOriginSuggestions([]);
-      console.log("[routing-ui] origin-picked-map", coordinate);
       return;
     }
 
-    setEndCoordinate(coordinate);
-    setEnd(
-      `Pinned destination (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
-    );
-    setDestinationSuggestions([]);
-    console.log("[routing-ui] destination-picked-map", coordinate);
+    if (!isCircular) {
+      setEndCoordinate(coordinate);
+      setEnd(
+        `Pinned destination (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
+      );
+      setDestinationSuggestions([]);
+    }
   };
-
-  const isGeneratedFlowValid = isTimeMode ? isTimeValid : isDistanceValid;
-  const isDestinationFlowValid =
-    hasDestination &&
-    (destinationMode === "direct" || parsedExtraDistanceKm !== null);
-
-  const isFormValid =
-    Boolean(startCoordinate) &&
-    (destinationRequested ? isDestinationFlowValid : isGeneratedFlowValid);
 
   const onGenerate = () => {
     setSubmitAttempted(true);
-
     if (!isFormValid) {
       Alert.alert("Invalid input", "Please fix the highlighted fields.");
       return;
@@ -297,42 +316,25 @@ export function HomeScreen({ navigation }: Props) {
 
     const params: RouteParamsWithUi = {
       goalMode,
-      timeMinutes: destinationRequested
-        ? totalMinutes > 0
-          ? totalMinutes
-          : undefined
-        : isTimeMode
-          ? totalMinutes
-          : normalizedDistance && normalizedPace
-            ? Math.round(normalizedDistance * normalizedPace)
-            : undefined,
+      timeMinutes:
+        isCircular && goalMode === "time" ? totalMinutes : undefined,
       paceMinPerKm: normalizedPace ?? undefined,
       targetDistanceKm,
-      circular: destinationRequested ? false : isCircular,
+      circular: isCircular,
       startCoordinate,
-      endCoordinate: destinationRequested ? endCoordinate : undefined,
+      endCoordinate: isCircular ? undefined : endCoordinate,
       start: start.trim() || undefined,
-      end: destinationRequested ? end.trim() || undefined : undefined,
+      end: !isCircular ? end.trim() || undefined : undefined,
       surface,
       intensity,
-      safety,
       waypoints,
     };
-
-    console.log("[routing-ui] generate", {
-      destinationRequested,
-      startCoordinate: params.startCoordinate,
-      endCoordinate: params.endCoordinate,
-      circular: params.circular,
-      targetDistanceKm: params.targetDistanceKm,
-    });
 
     setIsGenerating(true);
 
     setTimeout(async () => {
       try {
         const routes = await routeGenerationService.generateRoutes(params);
-
         navigation.navigate("Routes", {
           screen: "Results",
           params: { params, routes },
@@ -352,14 +354,32 @@ export function HomeScreen({ navigation }: Props) {
         <View style={styles.goalRow}>
           <Chip
             label="By time"
-            selected={isTimeMode}
+            selected={goalMode === "time"}
             onPress={() => setGoalMode("time")}
             style={{ flex: 1 }}
           />
           <Chip
             label="By distance"
-            selected={!isTimeMode}
+            selected={goalMode === "distance"}
             onPress={() => setGoalMode("distance")}
+            style={{ flex: 1 }}
+          />
+        </View>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>ROUTE TYPE</Text>
+        <View style={styles.goalRow}>
+          <Chip
+            label="Point to point"
+            selected={!isCircular}
+            onPress={() => setRouteType("point_to_point")}
+            style={{ flex: 1 }}
+          />
+          <Chip
+            label="Circular"
+            selected={isCircular}
+            onPress={() => setRouteType("circular")}
             style={{ flex: 1 }}
           />
         </View>
@@ -390,87 +410,41 @@ export function HomeScreen({ navigation }: Props) {
         ))}
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>DESTINATION (OPTIONAL)</Text>
-        <InputRow
-          placeholder="Search destination or leave empty"
-          value={end}
-          onChangeText={(text) => {
-            setEnd(text);
-            setEndCoordinate(undefined);
-          }}
-          error={destinationError}
-        />
-        {isSearchingDestination ? (
-          <Text style={styles.searchHint}>Searching...</Text>
-        ) : null}
-        {destinationSuggestions.map((item) => (
-          <Pressable
-            key={item.id}
-            onPress={() => onSelectDestination(item)}
-            style={styles.suggestionItem}
-          >
-            <Text style={styles.suggestionText}>{item.label}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>MAP POINTS (MANUAL)</Text>
-        <View style={styles.goalRow}>
-          <Chip
-            label="Pick origin"
-            selected={selectingPoint === "start"}
-            onPress={() => setSelectingPoint("start")}
-            style={{ flex: 1 }}
+      {!isCircular ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>DESTINATION</Text>
+          <InputRow
+            placeholder="Search destination..."
+            value={end}
+            onChangeText={(text) => {
+              setEnd(text);
+              setEndCoordinate(undefined);
+            }}
+            error={destinationError}
           />
-          <Chip
-            label="Pick destination"
-            selected={selectingPoint === "end"}
-            onPress={() => setSelectingPoint("end")}
-            style={{ flex: 1 }}
-          />
+          {isSearchingDestination ? (
+            <Text style={styles.searchHint}>Searching...</Text>
+          ) : null}
+          {destinationSuggestions.map((item) => (
+            <Pressable
+              key={item.id}
+              onPress={() => onSelectDestination(item)}
+              style={styles.suggestionItem}
+            >
+              <Text style={styles.suggestionText}>{item.label}</Text>
+            </Pressable>
+          ))}
+          {startCoordinate && endCoordinate ? (
+            <Text style={styles.mapHelpText}>
+              Estimated distance: ~{directDistanceKm.toFixed(1)} km
+            </Text>
+          ) : null}
         </View>
-        <MapView
-          style={styles.pointPickerMap}
-          initialRegion={{
-            latitude: 40.4168,
-            longitude: -3.7038,
-            latitudeDelta: 0.06,
-            longitudeDelta: 0.06,
-          }}
-          onPress={onMapPress}
-        >
-          {startCoordinate ? (
-            <Marker coordinate={startCoordinate} title="Origin" />
-          ) : null}
-          {endCoordinate ? (
-            <Marker coordinate={endCoordinate} title="End" />
-          ) : null}
-        </MapView>
-        <Text style={styles.mapHelpText}>
-          Tap map to set {selectingPoint === "start" ? "origin" : "destination"}
-          .
-        </Text>
-      </View>
-
-      {!destinationRequested ? (
-        <>
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>ROUTE TYPE</Text>
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Circular route</Text>
-              <Switch
-                value={isCircular}
-                onValueChange={setIsCircular}
-                trackColor={{ true: "#111827" }}
-              />
-            </View>
-          </View>
-
-          {isTimeMode ? (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>TIME & PACE</Text>
+      ) : (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>CIRCULAR SETTINGS</Text>
+          {goalMode === "time" ? (
+            <>
               <View style={styles.row}>
                 <InputRow
                   label="Hours"
@@ -493,86 +467,66 @@ export function HomeScreen({ navigation }: Props) {
                   ios: "numbers-and-punctuation",
                   default: "default",
                 })}
-                hint={distanceHint}
                 error={paceError}
-                autoCapitalize="none"
-                autoCorrect={false}
               />
-            </View>
+            </>
           ) : (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>DISTANCE</Text>
-              <InputRow
-                label="Distance (km)"
-                value={distanceKm}
-                onChangeText={setDistanceKm}
-                keyboardType="decimal-pad"
-                error={distanceError}
-              />
-            </View>
-          )}
-        </>
-      ) : (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>DESTINATION ROUTING</Text>
-          <View style={styles.goalRow}>
-            <Chip
-              label="Direct"
-              selected={destinationMode === "direct"}
-              onPress={() => setDestinationMode("direct")}
-              style={{ flex: 1 }}
-            />
-            <Chip
-              label="Longer route"
-              selected={destinationMode === "longer"}
-              onPress={() => setDestinationMode("longer")}
-              style={{ flex: 1 }}
-            />
-          </View>
-          <Text style={styles.mapHelpText}>
-            {hasDestination
-              ? `Direct estimate: ~${baseDirectDistanceKm.toFixed(1)} km`
-              : "Select destination to estimate route distance."}
-          </Text>
-          {destinationMode === "longer" ? (
             <InputRow
-              label="Extra distance (km)"
-              value={extraDistanceKm}
-              onChangeText={setExtraDistanceKm}
+              label="Target distance (km)"
+              value={distanceKm}
+              onChangeText={setDistanceKm}
               keyboardType="decimal-pad"
-              error={extraDistanceError}
+              error={distanceError}
             />
-          ) : null}
-
-          <Text style={styles.sectionTitle}>TIME & PACE (OPTIONAL)</Text>
-          <View style={styles.row}>
-            <InputRow
-              label="Hours"
-              value={hours}
-              onChangeText={setHours}
-              keyboardType="numeric"
-            />
-            <InputRow
-              label="Minutes"
-              value={minutes}
-              onChangeText={setMinutes}
-              keyboardType="numeric"
-            />
-          </View>
-          <InputRow
-            label="Pace (optional)"
-            value={pace}
-            onChangeText={setPace}
-            keyboardType={Platform.select({
-              ios: "numbers-and-punctuation",
-              default: "default",
-            })}
-            error={paceError}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
+          )}
         </View>
       )}
+
+      <View style={styles.section}>
+        <Pressable onPress={toggleMapPicker} style={styles.mapToggle}>
+          <Text style={styles.sectionTitle}>MAP POINTS (MANUAL)</Text>
+          <Text style={styles.mapToggleLabel}>
+            {isMapPickerOpen ? "Hide" : "Show"}
+          </Text>
+        </Pressable>
+
+        {isMapPickerOpen ? (
+          <>
+            <View style={styles.goalRow}>
+              <Chip
+                label="Pick origin"
+                selected={selectingPoint === "start"}
+                onPress={() => setSelectingPoint("start")}
+                style={{ flex: 1 }}
+              />
+              {!isCircular ? (
+                <Chip
+                  label="Pick destination"
+                  selected={selectingPoint === "end"}
+                  onPress={() => setSelectingPoint("end")}
+                  style={{ flex: 1 }}
+                />
+              ) : null}
+            </View>
+            <MapView
+              ref={mapRef}
+              style={styles.pointPickerMap}
+              initialRegion={DEFAULT_REGION}
+              onPress={onMapPress}
+            >
+              {startCoordinate ? (
+                <Marker coordinate={startCoordinate} title="Origin" />
+              ) : null}
+              {!isCircular && endCoordinate ? (
+                <Marker coordinate={endCoordinate} title="End" />
+              ) : null}
+            </MapView>
+            <Text style={styles.mapHelpText}>
+              Search is primary. Use map to fine-tune points manually.
+            </Text>
+          </>
+        ) : null}
+      </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>SURFACE</Text>
@@ -616,22 +570,6 @@ export function HomeScreen({ navigation }: Props) {
         </View>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>SAFETY</Text>
-        <View style={styles.chipRow}>
-          {["Safer streets", "Normal"].map((s) => (
-            <Chip
-              key={s}
-              label={s}
-              selected={safety === s}
-              onPress={() => setSafety(s)}
-              style={{ flex: 1 }}
-            />
-          ))}
-        </View>
-        <Text style={styles.hintText}>Safer may reduce options</Text>
-      </View>
-
       <View style={styles.footer}>
         <Button
           label="Generate routes"
@@ -671,19 +609,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
   },
-  switchRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 10,
-    padding: 12,
-  },
-  switchLabel: {
-    fontSize: 16,
-    color: "#111827",
-  },
   chipRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -701,11 +626,6 @@ const styles = StyleSheet.create({
   waypointsEmpty: {
     color: "#9ca3af",
     fontSize: 14,
-  },
-  hintText: {
-    fontSize: 12,
-    color: "#9ca3af",
-    marginTop: -4,
   },
   footer: {
     marginTop: 8,
@@ -735,5 +655,15 @@ const styles = StyleSheet.create({
   searchHint: {
     fontSize: 12,
     color: "#6b7280",
+  },
+  mapToggle: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  mapToggleLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#2563eb",
   },
 });
