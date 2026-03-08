@@ -1,4 +1,4 @@
-import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -15,11 +15,11 @@ import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { InputRow } from "../components/InputRow";
 import { searchPlaces, type PlaceSuggestion } from "../lib/place-search";
-import type { RootTabParamList } from "../navigation/types";
+import type { RoutesStackParamList } from "../navigation/types";
 import { routeGenerationService } from "../services/routeGenerationService";
 import type { RouteCoordinate, RouteParams } from "../types/route";
 
-type Props = BottomTabScreenProps<RootTabParamList, "Explore">;
+type Props = NativeStackScreenProps<RoutesStackParamList, "Home">;
 
 type RouteParamsWithUi = RouteParams & {
   circular: boolean;
@@ -340,10 +340,7 @@ export function HomeScreen({ navigation }: Props) {
     setTimeout(async () => {
       try {
         const routes = await routeGenerationService.generateRoutes(params);
-        navigation.navigate("Routes", {
-          screen: "Results",
-          params: { params, routes },
-        });
+        navigation.navigate("Results", { params, routes });
       } catch {
         Alert.alert("Route error", "Could not generate routes right now.");
       } finally {
@@ -354,6 +351,13 @@ export function HomeScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.hero}>
+        <Text style={styles.heroTitle}>Build your next route</Text>
+        <Text style={styles.heroSubtitle}>
+          Choose your preferences, then review generated alternatives on the next screen.
+        </Text>
+      </View>
+
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>GOAL</Text>
         <View style={styles.goalRow}>
@@ -577,7 +581,7 @@ export function HomeScreen({ navigation }: Props) {
 
       <View style={styles.footer}>
         <Button
-          label="Generate routes"
+          label="Generate route"
           onPress={onGenerate}
           disabled={!isFormValid}
           loading={isGenerating}
@@ -595,7 +599,25 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
     gap: 24,
-    paddingBottom: 40,
+    paddingBottom: 56,
+  },
+  hero: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    backgroundColor: "#f9fafb",
+    borderRadius: 12,
+    padding: 14,
+    gap: 6,
+  },
+  heroTitle: {
+    fontSize: 19,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  heroSubtitle: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#4b5563",
   },
   section: {
     gap: 12,

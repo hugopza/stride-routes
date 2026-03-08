@@ -1,10 +1,10 @@
 import { StyleSheet, Text, View } from "react-native";
 
-export function ProfileScreen() {
+export function SavedRoutesScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={styles.title}>Profile</Text>
+        <Text style={styles.title}>Saved routes</Text>
         <Text style={styles.text}>Coming soon</Text>
       </View>
     </View>
@@ -14,8 +14,8 @@ export function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: "center",
     justifyContent: "center",
+    alignItems: "center",
     backgroundColor: "#fff",
     padding: 16,
   },

@@ -1,7 +1,7 @@
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
-import { HomeScreen } from "../screens/HomeScreen";
 import { ProfileScreen } from "../screens/ProfileScreen";
+import { SavedRoutesScreen } from "../screens/SavedRoutesScreen";
 import { RoutesStack } from "./RoutesStack";
 import type { RootTabParamList } from "./types";
 
@@ -10,7 +10,7 @@ const Tab = createBottomTabNavigator<RootTabParamList>();
 export function TabNavigator() {
   return (
     <Tab.Navigator
-      initialRouteName="Explore"
+      initialRouteName="Generate"
       screenOptions={{
         headerShadowVisible: false,
         headerTitleStyle: { fontWeight: "700", fontSize: 20 },
@@ -19,14 +19,14 @@ export function TabNavigator() {
       }}
     >
       <Tab.Screen
-        name="Explore"
-        component={HomeScreen}
-        options={{ title: "Generate route", tabBarLabel: "Explore" }}
+        name="Generate"
+        component={RoutesStack}
+        options={{ headerShown: false, tabBarLabel: "Generate" }}
       />
       <Tab.Screen
-        name="Routes"
-        component={RoutesStack}
-        options={{ headerShown: false, tabBarLabel: "Routes" }}
+        name="Saved"
+        component={SavedRoutesScreen}
+        options={{ title: "Saved routes", tabBarLabel: "Saved" }}
       />
       <Tab.Screen
         name="Profile"

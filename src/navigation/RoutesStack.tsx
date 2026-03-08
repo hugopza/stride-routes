@@ -1,24 +1,16 @@
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
-import { FakeRouteProvider } from "../lib/route-providers/FakeRouteProvider";
+import { HomeScreen } from "../screens/HomeScreen";
 import { ResultsScreen } from "../screens/ResultsScreen";
 import { RouteDetailScreen } from "../screens/RouteDetailScreen";
 import type { RoutesStackParamList } from "./types";
 
 const Stack = createNativeStackNavigator<RoutesStackParamList>();
-const fakeRouteProvider = new FakeRouteProvider();
-
-const defaultParams = {
-  goalMode: "time" as const,
-  timeMinutes: 45,
-  paceMinPerKm: 5.5,
-  targetDistanceKm: 45 / 5.5,
-};
 
 export function RoutesStack() {
   return (
     <Stack.Navigator
-      initialRouteName="Results"
+      initialRouteName="Home"
       screenOptions={{
         headerShadowVisible: false,
         headerTitleStyle: { fontWeight: "700", fontSize: 20 },
@@ -27,14 +19,14 @@ export function RoutesStack() {
       }}
     >
       <Stack.Screen
+        name="Home"
+        component={HomeScreen}
+        options={{ title: "Generate route" }}
+      />
+      <Stack.Screen
         name="Results"
         component={ResultsScreen}
-        options={{ title: "Routes" }}
-        initialParams={{
-          params: defaultParams,
-          // Initial params are static; async providers are used from screen actions.
-          routes: fakeRouteProvider.generatePreviewRoutes(defaultParams),
-        }}
+        options={{ title: "Generated routes" }}
       />
       <Stack.Screen name="RouteDetail" component={RouteDetailScreen} />
     </Stack.Navigator>

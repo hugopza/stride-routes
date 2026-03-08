@@ -4,11 +4,11 @@ import type { RootStackParamList } from "../types/navigation";
 
 export type RoutesStackParamList = Pick<
   RootStackParamList,
-  "Results" | "RouteDetail"
+  "Home" | "Results" | "RouteDetail"
 >;
 
 export type RootTabParamList = {
-  Explore: undefined;
-  Routes: NavigatorScreenParams<RoutesStackParamList>;
+  Generate: NavigatorScreenParams<RoutesStackParamList> | undefined;
+  Saved: undefined;
   Profile: undefined;
 };
