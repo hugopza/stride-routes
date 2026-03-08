@@ -22,9 +22,18 @@ export function RouteDetailScreen({ navigation, route }: Props) {
   const [feedback, setFeedback] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
   const mapRef = useRef<MapView | null>(null);
-  const polyline = selectedRoute.polyline ?? [];
+  const polyline = (selectedRoute.polyline ?? []).filter(
+    (point) =>
+      Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
+  );
   const start = polyline[0];
   const end = polyline[polyline.length - 1];
+  const isClosedLoop = Boolean(
+    start &&
+      end &&
+      Math.abs(start.latitude - end.latitude) < 0.0002 &&
+      Math.abs(start.longitude - end.longitude) < 0.0002,
+  );
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -104,8 +113,15 @@ export function RouteDetailScreen({ navigation, route }: Props) {
                 strokeColor="#0f172a"
                 strokeWidth={4}
               />
-              {start ? <Marker coordinate={start} title="Start" /> : null}
-              {end ? <Marker coordinate={end} title="End" /> : null}
+              {start ? (
+                <Marker
+                  coordinate={start}
+                  title={isClosedLoop ? "Start / End" : "Start"}
+                />
+              ) : null}
+              {!isClosedLoop && end ? (
+                <Marker coordinate={end} title="End" />
+              ) : null}
             </MapView>
           ) : (
             <View style={styles.mapPlaceholder}>

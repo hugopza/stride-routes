@@ -90,13 +90,27 @@ type EvaluatedCandidate = {
   score: number;
   hardScore: number;
   preferenceScore: number;
+  source: "endpoint" | "round-trip" | "waypoint-fallback";
+  requestedLengthMeters?: number;
+  roundTripPoints?: number;
+  pattern?: WaypointPattern;
 };
 
-type CircularLoopCandidate = {
-  via1: RouteCoordinate;
-  via2: RouteCoordinate;
-  baseBearing: number;
+type RoundTripCandidate = {
+  seed: number;
+  points: number;
+  targetLengthMeters: number;
+  phase: "initial" | "refined";
+};
+
+type WaypointPattern = "triangle" | "box" | "skewed" | "elongated";
+
+type WaypointFallbackCandidate = {
+  pattern: WaypointPattern;
+  waypoints: RouteCoordinate[];
+  baseBearingDeg: number;
   radiusKm: number;
+  variant: number;
 };
 
 type RouteMode = "directed" | "start-only-noncircular" | "start-only-circular";
@@ -106,9 +120,27 @@ type EvaluationBatch = {
   mappedCandidates: number;
 };
 
+type RoundTripEvaluationBatch = EvaluationBatch & {
+  seedsWithMissingExtras: number;
+};
+
 type GeneratedBatch = {
   routes: CandidateRoute[];
   mappedCandidates: number;
+};
+
+type RoundTripGeneratedBatch = GeneratedBatch & {
+  validCandidates: number;
+  seedsWithMissingExtras: number;
+  fallbackReason?:
+    | "round_trip_missing_or_unusable_extras"
+    | "round_trip_no_valid_candidates";
+};
+
+type CircularDistanceGuard = {
+  bucket: "short" | "medium" | "long";
+  toleranceKm: number;
+  overshootCapRatio?: number;
 };
 
 const KM_PER_LAT_DEGREE = 111.32;
@@ -202,6 +234,30 @@ export class OpenRouteServiceProvider implements RouteProvider {
       latitude: origin.latitude + northKm / KM_PER_LAT_DEGREE,
       longitude:
         origin.longitude + eastKm / this.kmPerLonDegree(origin.latitude),
+    };
+  }
+
+  private resolveGenerationNonce(nonce: RouteParams["generationNonce"]): number {
+    if (typeof nonce === "number" && Number.isFinite(nonce)) {
+      return Math.abs(Math.trunc(nonce));
+    }
+    return Date.now();
+  }
+
+  private createNonceRng(seed: string): () => number {
+    let hash = 2166136261;
+    for (let i = 0; i < seed.length; i += 1) {
+      hash ^= seed.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+
+    return () => {
+      hash += hash << 13;
+      hash ^= hash >>> 7;
+      hash += hash << 3;
+      hash ^= hash >>> 17;
+      hash += hash << 5;
+      return ((hash >>> 0) % 1000000) / 1000000;
     };
   }
 
@@ -671,6 +727,146 @@ export class OpenRouteServiceProvider implements RouteProvider {
     return data;
   }
 
+  private hasRequiredExtrasForSurfaceModel(feature: OrsFeature): boolean {
+    const extras = feature.properties?.extras;
+    const surfaceSummaryCount = extras?.surface?.summary?.length ?? 0;
+    const waytypeSummaryCount =
+      extras?.waytype?.summary?.length ?? extras?.waytypes?.summary?.length ?? 0;
+    const waycategorySummaryCount =
+      extras?.waycategory?.summary?.length ??
+      extras?.waycategories?.summary?.length ??
+      0;
+
+    return (
+      surfaceSummaryCount > 0 &&
+      waytypeSummaryCount > 0 &&
+      waycategorySummaryCount > 0
+    );
+  }
+
+  private getRoundTripPointOptions(targetDistanceKm: number): [number, number] {
+    if (targetDistanceKm <= 8) {
+      return [3, 4];
+    }
+    if (targetDistanceKm <= 14) {
+      return [4, 5];
+    }
+    return [5, 6];
+  }
+
+  private clampRoundTripLengthMeters(
+    requestedLengthMeters: number,
+    targetDistanceKm: number,
+  ): number {
+    const minMeters = Math.max(600, Math.round(targetDistanceKm * 550));
+    const maxMeters = Math.max(minMeters + 400, Math.round(targetDistanceKm * 1450));
+    return Math.round(Math.max(minMeters, Math.min(maxMeters, requestedLengthMeters)));
+  }
+
+  private buildRoundTripCandidates(
+    targetDistanceKm: number,
+    nonce: number,
+  ): RoundTripCandidate[] {
+    const [minPoints, maxPoints] = this.getRoundTripPointOptions(targetDistanceKm);
+    const targetLengthMeters = this.clampRoundTripLengthMeters(
+      Math.round(targetDistanceKm * 1000),
+      targetDistanceKm,
+    );
+    const seeds = [11, 23, 37, 53, 71, 89];
+    const seedOffset = Math.abs(Math.trunc(nonce)) % 100000;
+
+    return seeds.map((seed, index) => ({
+      seed: seed + seedOffset + index * 29,
+      points: index % 2 === 0 ? minPoints : maxPoints,
+      targetLengthMeters,
+      phase: "initial",
+    }));
+  }
+
+  private buildRoundTripRefinementCandidates(
+    targetDistanceKm: number,
+    candidates: EvaluatedCandidate[],
+  ): RoundTripCandidate[] {
+    const refined: RoundTripCandidate[] = [];
+
+    for (const item of candidates.slice(0, 2)) {
+      if (!item.requestedLengthMeters || !item.roundTripPoints) {
+        continue;
+      }
+      const correctedLength =
+        item.requestedLengthMeters *
+        (targetDistanceKm / Math.max(0.25, item.route.distanceKm));
+      refined.push({
+        seed: item.bearingDeg,
+        points: item.roundTripPoints,
+        targetLengthMeters: this.clampRoundTripLengthMeters(
+          correctedLength,
+          targetDistanceKm,
+        ),
+        phase: "refined",
+      });
+    }
+
+    return refined;
+  }
+
+  private async requestCircularRoundTrip(
+    start: RouteCoordinate,
+    candidate: RoundTripCandidate,
+  ): Promise<OrsResponse> {
+    console.log("[ors] request-round-trip", {
+      start,
+      seed: candidate.seed,
+      points: candidate.points,
+      targetLengthMeters: candidate.targetLengthMeters,
+      phase: candidate.phase,
+      coordOrder: "[lon, lat]",
+    });
+
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: env.openRouteServiceApiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        coordinates: [[start.longitude, start.latitude]],
+        options: {
+          round_trip: {
+            length: candidate.targetLengthMeters,
+            points: candidate.points,
+            seed: candidate.seed,
+          },
+        },
+        extra_info: ["surface", "waytype", "waycategory"],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.log("[ors] round-trip-response-error", {
+        seed: candidate.seed,
+        phase: candidate.phase,
+        status: response.status,
+        body: errorBody.slice(0, 500),
+      });
+      throw new Error(`ORS round-trip request failed (${response.status}).`);
+    }
+
+    const data = (await response.json()) as OrsResponse;
+    const extrasPresence = (data.features ?? []).map((feature) =>
+      this.hasRequiredExtrasForSurfaceModel(feature),
+    );
+    console.log("[ors] round-trip-response-ok", {
+      seed: candidate.seed,
+      phase: candidate.phase,
+      features: data.features?.length ?? 0,
+      extrasPresent: extrasPresence,
+    });
+
+    return data;
+  }
+
   private mapFeaturesToRoutes(
     data: OrsResponse,
     pace: number,
@@ -930,11 +1126,9 @@ export class OpenRouteServiceProvider implements RouteProvider {
     scored: EvaluatedCandidate[],
     targetDistanceKm: number,
   ): CandidateRoute[] {
-    const strictToleranceKm = Math.max(1.2, targetDistanceKm * 0.22);
-    const acceptable = scored.filter(
-      (item) => Math.abs(item.route.distanceKm - targetDistanceKm) <= strictToleranceKm,
+    const basePool = [...scored].sort((a, b) =>
+      this.compareByDistanceThenQuality(a, b, targetDistanceKm),
     );
-    const basePool = acceptable.length > 0 ? acceptable : scored;
     const bestHard = basePool.reduce(
       (best, item) => Math.min(best, item.hardScore),
       Number.POSITIVE_INFINITY,
@@ -1042,60 +1236,286 @@ export class OpenRouteServiceProvider implements RouteProvider {
     return preferenceA - preferenceB;
   }
 
-  private generateCircularLoopCandidates(
-    start: RouteCoordinate,
-    targetDistanceKm: number,
-  ): CircularLoopCandidate[] {
-    const radiusKm = Math.max(0.25, Math.min(6, targetDistanceKm / 3.4));
-    const bases = [0, 60, 120, 180, 240, 300];
-
-    return bases.map((baseBearing) => ({
-      via1: this.offsetCoordinate(start, radiusKm * 0.95, baseBearing - 35),
-      via2: this.offsetCoordinate(start, radiusKm * 1.05, baseBearing + 80),
-      baseBearing,
-      radiusKm,
-    }));
+  private getCircularDistanceGuard(targetDistanceKm: number): CircularDistanceGuard {
+    if (targetDistanceKm <= 8) {
+      return {
+        bucket: "short",
+        toleranceKm: Math.max(0.9, targetDistanceKm * 0.18),
+      };
+    }
+    if (targetDistanceKm <= 14) {
+      return {
+        bucket: "medium",
+        toleranceKm: Math.max(1.2, targetDistanceKm * 0.16),
+      };
+    }
+    return {
+      bucket: "long",
+      toleranceKm: Math.max(1.8, targetDistanceKm * 0.15),
+      overshootCapRatio: 1.25,
+    };
   }
 
-  private createCircularRefinements(
-    start: RouteCoordinate,
-    evaluated: EvaluatedCandidate[],
+  private passesCircularDistanceGuard(
+    routeDistanceKm: number,
     targetDistanceKm: number,
-  ): CircularLoopCandidate[] {
-    const refinements: CircularLoopCandidate[] = [];
+    guard: CircularDistanceGuard,
+  ): boolean {
+    const diffKm = Math.abs(routeDistanceKm - targetDistanceKm);
+    if (diffKm > guard.toleranceKm) {
+      return false;
+    }
+    if (
+      guard.overshootCapRatio &&
+      routeDistanceKm > targetDistanceKm * guard.overshootCapRatio
+    ) {
+      return false;
+    }
+    return true;
+  }
 
-    for (let i = 0; i < Math.min(2, evaluated.length); i += 1) {
-      const result = evaluated[i];
-      const ratio = Math.min(
-        1.3,
-        Math.max(0.75, targetDistanceKm / Math.max(0.2, result.route.distanceKm)),
+  private applyCircularDistanceGuard(
+    candidates: EvaluatedCandidate[],
+    targetDistanceKm: number,
+    context: string,
+  ): EvaluatedCandidate[] {
+    const guard = this.getCircularDistanceGuard(targetDistanceKm);
+    const inspected = candidates.map((candidate) => {
+      const diffKm = Math.abs(candidate.route.distanceKm - targetDistanceKm);
+      const passed = this.passesCircularDistanceGuard(
+        candidate.route.distanceKm,
+        targetDistanceKm,
+        guard,
       );
-      const tunedRadius = Math.max(0.2, Math.min(7, result.radiusKm * ratio));
+      return {
+        candidate,
+        diffKm,
+        passed,
+      };
+    });
 
-      const variants = [result.bearingDeg - 15, result.bearingDeg + 15];
-      for (const bearing of variants) {
-        refinements.push({
-          via1: this.offsetCoordinate(start, tunedRadius * 0.95, bearing - 35),
-          via2: this.offsetCoordinate(start, tunedRadius * 1.05, bearing + 80),
-          baseBearing: bearing,
-          radiusKm: tunedRadius,
+    console.log("[ors] circular-distance-guard", {
+      context,
+      bucket: guard.bucket,
+      toleranceKm: Number(guard.toleranceKm.toFixed(2)),
+      overshootCapRatio: guard.overshootCapRatio ?? null,
+      candidates: inspected.map((item) => ({
+        source: item.candidate.source,
+        pattern: item.candidate.pattern ?? null,
+        distanceKm: Number(item.candidate.route.distanceKm.toFixed(2)),
+        diffKm: Number(item.diffKm.toFixed(2)),
+        passed: item.passed,
+      })),
+      validCandidates: inspected.filter((item) => item.passed).length,
+    });
+
+    return inspected.filter((item) => item.passed).map((item) => item.candidate);
+  }
+
+  private async evaluateCircularRoundTripCandidates(
+    start: RouteCoordinate,
+    pace: number,
+    targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
+    candidates: RoundTripCandidate[],
+  ): Promise<RoundTripEvaluationBatch> {
+    const results: EvaluatedCandidate[] = [];
+    let mappedCandidates = 0;
+    let seedsWithMissingExtras = 0;
+
+    for (const candidate of candidates) {
+      try {
+        const data = await this.requestCircularRoundTrip(start, candidate);
+        const features = data.features ?? [];
+        const featuresWithRequiredExtras = features.filter((feature) =>
+          this.hasRequiredExtrasForSurfaceModel(feature),
+        );
+        const hasMissingExtras =
+          features.length > 0 &&
+          featuresWithRequiredExtras.length < features.length;
+        if (hasMissingExtras) {
+          seedsWithMissingExtras += 1;
+        }
+        if (featuresWithRequiredExtras.length === 0) {
+          console.log("[ors] round-trip-candidate", {
+            seed: candidate.seed,
+            points: candidate.points,
+            targetLengthMeters: candidate.targetLengthMeters,
+            extrasPresent: false,
+            validCandidates: 0,
+          });
+          continue;
+        }
+
+        const mapped = this.mapFeaturesToRoutes(
+          { features: featuresWithRequiredExtras },
+          pace,
+        );
+        mappedCandidates += mapped.length;
+        const gated = this.applySurfaceGate(
+          mapped,
+          surfacePreference,
+          `round-trip-${candidate.seed}`,
+        );
+
+        if (gated.length > 0) {
+          const scored = gated.map((item) => {
+            const score = this.computeModeScore(
+              "start-only-circular",
+              item.route,
+              item.surfaceProfile,
+              targetDistanceKm,
+              surfacePreference,
+              start,
+            );
+            return {
+              ...item,
+              hard: score.hard,
+              preference: score.preference,
+            };
+          });
+          const best = scored.sort((a, b) =>
+            this.compareByDistanceThenQuality(a, b, targetDistanceKm),
+          )[0];
+          const score = this.computeModeScore(
+            "start-only-circular",
+            best.route,
+            best.surfaceProfile,
+            targetDistanceKm,
+            surfacePreference,
+            start,
+          );
+          results.push({
+            route: best.route,
+            surfaceProfile: best.surfaceProfile,
+            endpoint: best.route.polyline[best.route.polyline.length - 1],
+            bearingDeg: candidate.seed,
+            radiusKm: Math.max(0.2, candidate.targetLengthMeters / 3000),
+            score: score.total,
+            hardScore: score.hard,
+            preferenceScore: score.preference,
+            source: "round-trip",
+            requestedLengthMeters: candidate.targetLengthMeters,
+            roundTripPoints: candidate.points,
+          });
+        }
+
+        console.log("[ors] round-trip-candidate", {
+          seed: candidate.seed,
+          points: candidate.points,
+          targetLengthMeters: candidate.targetLengthMeters,
+          phase: candidate.phase,
+          extrasPresent: !hasMissingExtras,
+          validCandidates: gated.length,
+        });
+      } catch (error) {
+        console.log("[ors] round-trip-candidate-failed", {
+          seed: candidate.seed,
+          phase: candidate.phase,
+          reason: error instanceof Error ? error.message : "Unknown error",
         });
       }
     }
 
-    return refinements;
+    return { results, mappedCandidates, seedsWithMissingExtras };
   }
 
-  private async requestCircularLoop(
+  private createWaypointPattern(
     start: RouteCoordinate,
-    via1: RouteCoordinate,
-    via2: RouteCoordinate,
+    pattern: WaypointPattern,
+    baseBearingDeg: number,
+    radiusKm: number,
+    asymmetry: number,
+    jitterDeg: number,
+    rng: () => number,
+  ): RouteCoordinate[] {
+    const randomScale = () => 1 + (rng() - 0.5) * asymmetry;
+    const randomBearing = () => (rng() - 0.5) * jitterDeg;
+
+    const build = (offsets: number[], scales: number[]): RouteCoordinate[] =>
+      offsets.map((offsetDeg, index) =>
+        this.offsetCoordinate(
+          start,
+          Math.max(0.15, radiusKm * scales[index] * randomScale()),
+          baseBearingDeg + offsetDeg + randomBearing(),
+        ),
+      );
+
+    if (pattern === "triangle") {
+      return build([0, 118, 232], [1.02, 0.9, 1.08]);
+    }
+    if (pattern === "box") {
+      return build([0, 80, 170, 258], [1.0, 0.94, 1.02, 0.9]);
+    }
+    if (pattern === "skewed") {
+      return build([-15, 72, 166, 248], [0.95, 1.07, 0.9, 1.03]);
+    }
+    return build([0, 56, 176, 232], [1.2, 0.84, 1.14, 0.8]);
+  }
+
+  private generateWaypointFallbackCandidates(
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+    nonce: number,
+  ): WaypointFallbackCandidate[] {
+    const rng = this.createNonceRng(
+      `fallback-${nonce}-${start.latitude.toFixed(5)}-${start.longitude.toFixed(
+        5,
+      )}-${targetDistanceKm.toFixed(2)}`,
+    );
+    const baseRadiusKm = Math.max(0.25, Math.min(7.5, targetDistanceKm / 3.6));
+    const globalRotationDeg = rng() * 360;
+    const plans: Array<{ pattern: WaypointPattern; bearingDeg: number; scale: number }> = [
+      { pattern: "triangle", bearingDeg: 0, scale: 0.92 },
+      { pattern: "triangle", bearingDeg: 140, scale: 1.0 },
+      { pattern: "triangle", bearingDeg: 260, scale: 1.08 },
+      { pattern: "box", bearingDeg: 45, scale: 0.95 },
+      { pattern: "box", bearingDeg: 170, scale: 1.03 },
+      { pattern: "box", bearingDeg: 300, scale: 0.9 },
+      { pattern: "skewed", bearingDeg: 20, scale: 0.96 },
+      { pattern: "skewed", bearingDeg: 205, scale: 1.04 },
+      { pattern: "elongated", bearingDeg: 95, scale: 0.98 },
+      { pattern: "elongated", bearingDeg: 275, scale: 1.05 },
+    ];
+
+    return plans.map((plan, index) => {
+      const radiusKm = Math.max(
+        0.2,
+        baseRadiusKm * plan.scale * (0.86 + rng() * 0.3),
+      );
+      const baseBearingDeg =
+        globalRotationDeg + plan.bearingDeg + (rng() - 0.5) * 18;
+      const asymmetry = 0.14 + rng() * 0.2;
+      const jitterDeg = 8 + rng() * 8;
+
+      return {
+        pattern: plan.pattern,
+        waypoints: this.createWaypointPattern(
+          start,
+          plan.pattern,
+          baseBearingDeg,
+          radiusKm,
+          asymmetry,
+          jitterDeg,
+          rng,
+        ),
+        baseBearingDeg,
+        radiusKm,
+        variant: index + 1,
+      };
+    });
+  }
+
+  private async requestCircularWaypointLoop(
+    start: RouteCoordinate,
+    candidate: WaypointFallbackCandidate,
   ): Promise<OrsResponse> {
-    console.log("[ors] request-circular", {
-      start,
-      via1,
-      via2,
-      end: start,
+    console.log("[ors] request-circular-fallback", {
+      pattern: candidate.pattern,
+      variant: candidate.variant,
+      waypoints: candidate.waypoints.length,
+      baseBearingDeg: Number(candidate.baseBearingDeg.toFixed(1)),
+      radiusKm: Number(candidate.radiusKm.toFixed(2)),
       coordOrder: "[lon, lat]",
     });
 
@@ -1108,8 +1528,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       body: JSON.stringify({
         coordinates: [
           [start.longitude, start.latitude],
-          [via1.longitude, via1.latitude],
-          [via2.longitude, via2.latitude],
+          ...candidate.waypoints.map((point) => [point.longitude, point.latitude]),
           [start.longitude, start.latitude],
         ],
         extra_info: ["surface", "waytype", "waycategory"],
@@ -1118,39 +1537,37 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.log("[ors] circular-response-error", {
+      console.log("[ors] circular-fallback-response-error", {
+        pattern: candidate.pattern,
+        variant: candidate.variant,
         status: response.status,
         body: errorBody.slice(0, 500),
       });
-      throw new Error(`ORS circular request failed (${response.status}).`);
+      throw new Error(`ORS circular fallback request failed (${response.status}).`);
     }
 
     return (await response.json()) as OrsResponse;
   }
 
-  private async evaluateCircularCandidates(
+  private async evaluateWaypointFallbackCandidates(
     start: RouteCoordinate,
     pace: number,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
-    candidates: CircularLoopCandidate[],
+    candidates: WaypointFallbackCandidate[],
   ): Promise<EvaluationBatch> {
     const results: EvaluatedCandidate[] = [];
     let mappedCandidates = 0;
 
     for (const candidate of candidates) {
       try {
-        const data = await this.requestCircularLoop(
-          start,
-          candidate.via1,
-          candidate.via2,
-        );
+        const data = await this.requestCircularWaypointLoop(start, candidate);
         const mapped = this.mapFeaturesToRoutes(data, pace);
         mappedCandidates += mapped.length;
         const gated = this.applySurfaceGate(
           mapped,
           surfacePreference,
-          `start-only-circular-${candidate.baseBearing}`,
+          `waypoint-fallback-${candidate.pattern}-${candidate.variant}`,
         );
         if (gated.length > 0) {
           const scored = gated.map((item) => {
@@ -1183,16 +1600,19 @@ export class OpenRouteServiceProvider implements RouteProvider {
             route: best.route,
             surfaceProfile: best.surfaceProfile,
             endpoint: best.route.polyline[best.route.polyline.length - 1],
-            bearingDeg: candidate.baseBearing,
+            bearingDeg: candidate.baseBearingDeg,
             radiusKm: candidate.radiusKm,
             score: score.total,
             hardScore: score.hard,
             preferenceScore: score.preference,
+            source: "waypoint-fallback",
+            pattern: candidate.pattern,
           });
         }
       } catch (error) {
-        console.log("[ors] circular-candidate-failed", {
-          baseBearing: candidate.baseBearing,
+        console.log("[ors] circular-fallback-candidate-failed", {
+          pattern: candidate.pattern,
+          variant: candidate.variant,
           reason: error instanceof Error ? error.message : "Unknown error",
         });
       }
@@ -1255,6 +1675,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             score: score.total,
             hardScore: score.hard,
             preferenceScore: score.preference,
+            source: "endpoint",
           });
         }
       } catch (error) {
@@ -1326,62 +1747,181 @@ export class OpenRouteServiceProvider implements RouteProvider {
     };
   }
 
-  private async generateCircularFromStartOnly(
+  private async generateCircularFromWaypointFallback(
     start: RouteCoordinate,
     targetDistanceKm: number,
     pace: number,
     surfacePreference: SurfacePreference,
+    nonce: number,
   ): Promise<GeneratedBatch> {
-    const initial = this.generateCircularLoopCandidates(start, targetDistanceKm);
-    const initialEvaluation = await this.evaluateCircularCandidates(
+    const candidates = this.generateWaypointFallbackCandidates(
+      start,
+      targetDistanceKm,
+      nonce,
+    );
+    const evaluation = await this.evaluateWaypointFallbackCandidates(
       start,
       pace,
       targetDistanceKm,
       surfacePreference,
-      initial,
+      candidates,
     );
-    const bestInitial = [...initialEvaluation.results]
-      .sort((a, b) =>
-        this.compareByDistanceThenQuality(a, b, targetDistanceKm),
+    const guarded = this.applyCircularDistanceGuard(
+      evaluation.results,
+      targetDistanceKm,
+      "waypoint-fallback",
+    );
+    const picked = this.pickDiverseCircularBest(guarded, targetDistanceKm);
+
+    console.log("[ors] generated-circular-waypoint-fallback", {
+      nonce,
+      attempted: candidates.length,
+      usableAfterSurface: evaluation.results.length,
+      usableAfterDistance: guarded.length,
+      returned: picked.length,
+      distances: picked.map((route) => route.distanceKm),
+    });
+
+    return {
+      routes: picked,
+      mappedCandidates: evaluation.mappedCandidates,
+    };
+  }
+
+  private async generateCircularFromRoundTrip(
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+    pace: number,
+    surfacePreference: SurfacePreference,
+    nonce: number,
+  ): Promise<RoundTripGeneratedBatch> {
+    const initialCandidates = this.buildRoundTripCandidates(
+      targetDistanceKm,
+      nonce,
+    );
+    const initialEvaluation = await this.evaluateCircularRoundTripCandidates(
+      start,
+      pace,
+      targetDistanceKm,
+      surfacePreference,
+      initialCandidates,
+    );
+    const topByDistance = [...initialEvaluation.results]
+      .sort(
+        (a, b) =>
+          Math.abs(a.route.distanceKm - targetDistanceKm) -
+          Math.abs(b.route.distanceKm - targetDistanceKm),
       )
       .slice(0, 2);
-
-    const refinement = this.createCircularRefinements(
-      start,
-      bestInitial,
+    const refinementCandidates = this.buildRoundTripRefinementCandidates(
       targetDistanceKm,
+      topByDistance,
     );
-    const refinementEvaluation = await this.evaluateCircularCandidates(
-      start,
-      pace,
-      targetDistanceKm,
-      surfacePreference,
-      refinement,
-    );
+    const refinementEvaluation =
+      refinementCandidates.length > 0
+        ? await this.evaluateCircularRoundTripCandidates(
+            start,
+            pace,
+            targetDistanceKm,
+            surfacePreference,
+            refinementCandidates,
+          )
+        : { results: [], mappedCandidates: 0, seedsWithMissingExtras: 0 };
 
     const combined = [
       ...initialEvaluation.results,
       ...refinementEvaluation.results,
-    ].sort((a, b) =>
-      this.compareByDistanceThenQuality(a, b, targetDistanceKm),
+    ];
+    const guarded = this.applyCircularDistanceGuard(
+      combined,
+      targetDistanceKm,
+      "round-trip",
     );
-    const picked = this.pickDiverseCircularBest(combined, targetDistanceKm);
+    const picked = this.pickDiverseCircularBest(guarded, targetDistanceKm);
+    const fallbackReason =
+      picked.length === 0
+        ? initialEvaluation.seedsWithMissingExtras +
+            refinementEvaluation.seedsWithMissingExtras >
+            0 &&
+          initialEvaluation.results.length + refinementEvaluation.results.length === 0
+          ? "round_trip_missing_or_unusable_extras"
+          : "round_trip_no_valid_candidates"
+        : undefined;
 
-    console.log("[ors] generated-circular", {
-      attempted: initial.length + refinement.length,
-      initialAttempted: initial.length,
-      refinementAttempted: refinement.length,
-      usable: combined.length,
-      returned: picked.length,
-      strictToleranceKm: Math.max(1.2, targetDistanceKm * 0.22),
+    console.log("[ors] generated-circular-round-trip", {
+      nonce,
+      attemptedSeeds: initialCandidates.length + refinementCandidates.length,
+      initialAttemptedSeeds: initialCandidates.length,
+      refinementAttemptedSeeds: refinementCandidates.length,
+      pointOptions: this.getRoundTripPointOptions(targetDistanceKm),
+      targetLengthMeters: initialCandidates[0]?.targetLengthMeters ?? 0,
+      usableAfterSurface: combined.length,
+      usableAfterDistance: guarded.length,
+      validCandidates: picked.length,
+      mappedCandidates:
+        initialEvaluation.mappedCandidates + refinementEvaluation.mappedCandidates,
+      seedsWithMissingExtras:
+        initialEvaluation.seedsWithMissingExtras +
+        refinementEvaluation.seedsWithMissingExtras,
+      fallbackReason,
       distances: picked.map((route) => route.distanceKm),
     });
 
     return {
       routes: picked,
       mappedCandidates:
-        initialEvaluation.mappedCandidates +
-        refinementEvaluation.mappedCandidates,
+        initialEvaluation.mappedCandidates + refinementEvaluation.mappedCandidates,
+      validCandidates: picked.length,
+      seedsWithMissingExtras:
+        initialEvaluation.seedsWithMissingExtras +
+        refinementEvaluation.seedsWithMissingExtras,
+      fallbackReason,
+    };
+  }
+
+  private async generateCircularFromStartOnly(
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+    pace: number,
+    surfacePreference: SurfacePreference,
+    nonce: number,
+  ): Promise<GeneratedBatch> {
+    const roundTrip = await this.generateCircularFromRoundTrip(
+      start,
+      targetDistanceKm,
+      pace,
+      surfacePreference,
+      nonce,
+    );
+
+    if (roundTrip.routes.length > 0) {
+      return {
+        routes: roundTrip.routes,
+        mappedCandidates: roundTrip.mappedCandidates,
+      };
+    }
+
+    console.log("[ors] circular-round-trip-fallback", {
+      nonce,
+      reason: roundTrip.fallbackReason ?? "round_trip_no_valid_candidates",
+      targetDistanceKm,
+      mappedCandidates: roundTrip.mappedCandidates,
+      seedsWithMissingExtras: roundTrip.seedsWithMissingExtras,
+      validCandidates: roundTrip.validCandidates,
+    });
+
+    const waypointFallback = await this.generateCircularFromWaypointFallback(
+      start,
+      targetDistanceKm,
+      pace,
+      surfacePreference,
+      nonce,
+    );
+
+    return {
+      routes: waypointFallback.routes,
+      mappedCandidates:
+        roundTrip.mappedCandidates + waypointFallback.mappedCandidates,
     };
   }
 
@@ -1455,12 +1995,15 @@ export class OpenRouteServiceProvider implements RouteProvider {
       return finalRoutes;
     }
 
+    const generationNonce = this.resolveGenerationNonce(params.generationNonce);
+
     const generated = params.circular
       ? await this.generateCircularFromStartOnly(
           params.startCoordinate,
           params.targetDistanceKm,
           pace,
           surfacePreference,
+          generationNonce,
         )
       : await this.generateFromStartOnly(
           params.startCoordinate,

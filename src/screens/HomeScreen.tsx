@@ -94,6 +94,7 @@ function haversineKm(a: RouteCoordinate, b: RouteCoordinate): number {
 
 export function HomeScreen({ navigation }: Props) {
   const mapRef = useRef<MapView | null>(null);
+  const nonceCounterRef = useRef(0);
 
   const [goalMode, setGoalMode] = useState<"time" | "distance">("time");
   const [routeType, setRouteType] = useState<"point_to_point" | "circular">(
@@ -314,12 +315,16 @@ export function HomeScreen({ navigation }: Props) {
       return;
     }
 
+    nonceCounterRef.current += 1;
+    const generationNonce = Date.now() + nonceCounterRef.current;
+
     const params: RouteParamsWithUi = {
       goalMode,
       timeMinutes:
         isCircular && goalMode === "time" ? totalMinutes : undefined,
       paceMinPerKm: normalizedPace ?? undefined,
       targetDistanceKm,
+      generationNonce,
       circular: isCircular,
       startCoordinate,
       endCoordinate: isCircular ? undefined : endCoordinate,

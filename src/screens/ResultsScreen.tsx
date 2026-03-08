@@ -15,10 +15,29 @@ export function ResultsScreen({ navigation, route }: Props) {
 
   const [list, setList] = useState<CandidateRoute[]>(routes);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [generationNonce, setGenerationNonce] = useState(
+    params.generationNonce ?? Date.now(),
+  );
 
   useEffect(() => {
-    setList(routes);
-  }, [routes]);
+    setSelectedRouteId(null);
+    setGenerationNonce(params.generationNonce ?? Date.now());
+    setList([]);
+    const timeout = setTimeout(() => {
+      setList(routes);
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [
+    routes,
+    params.generationNonce,
+    params.surface,
+    params.targetDistanceKm,
+    params.circular,
+    params.goalMode,
+    params.paceMinPerKm,
+    params.timeMinutes,
+  ]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -34,12 +53,24 @@ export function ResultsScreen({ navigation, route }: Props) {
   }, [navigation]);
 
   const onRegenerate = () => {
+    const previousList = list;
+    const nextGenerationNonce = generationNonce + 1;
+
     setIsRegenerating(true);
+    setSelectedRouteId(null);
+    setList([]);
+    setGenerationNonce(nextGenerationNonce);
 
     setTimeout(async () => {
       try {
-        setList(await routeGenerationService.generateRoutes(params));
+        setList(
+          await routeGenerationService.generateRoutes({
+            ...params,
+            generationNonce: nextGenerationNonce,
+          }),
+        );
       } catch {
+        setList(previousList);
         Alert.alert("Route error", "Could not regenerate routes right now.");
       } finally {
         setIsRegenerating(false);
@@ -88,11 +119,14 @@ export function ResultsScreen({ navigation, route }: Props) {
         ) : (
           list.map((candidate, index) => (
             <RouteCard
-              key={candidate.id}
+              key={`${candidate.id}-${index}`}
               route={candidate}
-              onPress={() =>
-                navigation.navigate("RouteDetail", { route: candidate })
-              }
+              onPress={() => {
+                if (selectedRouteId !== candidate.id) {
+                  setSelectedRouteId(candidate.id);
+                }
+                navigation.navigate("RouteDetail", { route: candidate });
+              }}
               tags={
                 index === 0
                   ? ["FLATTER", "MIXED"]

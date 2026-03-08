@@ -3,6 +3,7 @@ export type RouteParams = {
   timeMinutes?: number;
   paceMinPerKm?: number;
   targetDistanceKm: number;
+  generationNonce?: number;
   surface?: "asphalt" | "mixed" | "trail" | string;
   circular?: boolean;
   startCoordinate?: RouteCoordinate;
