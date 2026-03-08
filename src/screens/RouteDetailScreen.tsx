@@ -50,16 +50,6 @@ export function RouteDetailScreen({ navigation, route }: Props) {
   }, [navigation, selectedRoute.name]);
 
   useEffect(() => {
-    console.log("[routing-render] route-detail", {
-      routeId: selectedRoute.id,
-      name: selectedRoute.name,
-      points: polyline.length,
-      start,
-      end,
-    });
-  }, [selectedRoute.id, selectedRoute.name, polyline.length, start, end]);
-
-  useEffect(() => {
     if (polyline.length < 2) {
       return;
     }
@@ -83,6 +73,14 @@ export function RouteDetailScreen({ navigation, route }: Props) {
   };
 
   const onExportGpx = async () => {
+    if (selectedRoute.provider === "fake") {
+      Alert.alert(
+        "Export GPX",
+        "Synthetic development routes cannot be exported as GPX.",
+      );
+      return;
+    }
+
     if (polyline.length < 2) {
       Alert.alert("Export GPX", "This route cannot be exported yet.");
       return;

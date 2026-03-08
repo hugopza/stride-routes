@@ -191,6 +191,7 @@ function mapFeatureToCandidateRoute(
   return {
     id: `ors-route-${index + 1}`,
     name: index === 0 ? "OpenStreetMap Route" : `Alternative ${index + 1}`,
+    provider: "real",
     distanceKm,
     estimatedDurationMinutes: durationMinutes,
     elevationGainM,
@@ -216,6 +217,19 @@ function clamp01(value: number): number {
 export class OpenRouteServiceProvider implements RouteProvider {
   private readonly endpoint =
     "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
+
+  private debugLog(message: string, payload?: unknown): void {
+    if (!env.routingDebug) {
+      return;
+    }
+
+    if (payload === undefined) {
+      console.log(message);
+      return;
+    }
+
+    console.log(message, payload);
+  }
 
   private kmPerLonDegree(latitude: number): number {
     return 111.32 * Math.cos((latitude * Math.PI) / 180);
@@ -561,15 +575,15 @@ export class OpenRouteServiceProvider implements RouteProvider {
       }
     }
     const majorRoadRatio =
-      totalWaycategoryWeight > 0 ? majorRoadWeight / totalWaycategoryWeight : 0.25;
+      totalWaycategoryWeight > 0 ? majorRoadWeight / totalWaycategoryWeight : 0;
 
-    console.log("[ors] waycategory-summary", {
+    this.debugLog("[ors] waycategory-summary", {
       rawValues: waycategorySummary.map((item) => item.value),
       buckets: waycategoryDebug,
       majorRoadRatio: Number(majorRoadRatio.toFixed(3)),
     });
 
-    console.log("[ors] surface-profile", {
+    this.debugLog("[ors] surface-profile", {
       surfaceRawValues: (extras?.surface?.summary ?? []).map((item) => item.value),
       waytypeRawValues: (extras?.waytype?.summary ?? extras?.waytypes?.summary ?? []).map(
         (item) => item.value,
@@ -643,7 +657,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       };
     });
 
-    console.log("[ors] surface-gate", {
+    this.debugLog("[ors] surface-gate", {
       mode: preference,
       context,
       candidates: inspected.map((item) => ({
@@ -679,7 +693,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     end: RouteCoordinate,
     allowAlternatives: boolean,
   ): Promise<OrsResponse> {
-    console.log("[ors] request", {
+    this.debugLog("[ors] request", {
       profile: "foot-walking",
       start,
       end,
@@ -713,7 +727,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.log("[ors] response-error", {
+      this.debugLog("[ors] response-error", {
         status: response.status,
         body: errorBody.slice(0, 500),
       });
@@ -721,7 +735,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     }
 
     const data = (await response.json()) as OrsResponse;
-    console.log("[ors] response-ok", {
+    this.debugLog("[ors] response-ok", {
       features: data.features?.length ?? 0,
     });
     return data;
@@ -814,7 +828,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     candidate: RoundTripCandidate,
   ): Promise<OrsResponse> {
-    console.log("[ors] request-round-trip", {
+    this.debugLog("[ors] request-round-trip", {
       start,
       seed: candidate.seed,
       points: candidate.points,
@@ -844,7 +858,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.log("[ors] round-trip-response-error", {
+      this.debugLog("[ors] round-trip-response-error", {
         seed: candidate.seed,
         phase: candidate.phase,
         status: response.status,
@@ -857,7 +871,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     const extrasPresence = (data.features ?? []).map((feature) =>
       this.hasRequiredExtrasForSurfaceModel(feature),
     );
-    console.log("[ors] round-trip-response-ok", {
+    this.debugLog("[ors] round-trip-response-ok", {
       seed: candidate.seed,
       phase: candidate.phase,
       features: data.features?.length ?? 0,
@@ -884,7 +898,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       })
       .filter((item): item is MappedRoute => item !== null);
 
-    console.log("[ors] mapped", {
+    this.debugLog("[ors] mapped", {
       routes: mapped.length,
       pointsPerRoute: mapped.map((item) => item.route.polyline.length),
       firstRouteStart: mapped[0]?.route.polyline[0],
@@ -1294,7 +1308,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       };
     });
 
-    console.log("[ors] circular-distance-guard", {
+    this.debugLog("[ors] circular-distance-guard", {
       context,
       bucket: guard.bucket,
       toleranceKm: Number(guard.toleranceKm.toFixed(2)),
@@ -1337,7 +1351,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           seedsWithMissingExtras += 1;
         }
         if (featuresWithRequiredExtras.length === 0) {
-          console.log("[ors] round-trip-candidate", {
+          this.debugLog("[ors] round-trip-candidate", {
             seed: candidate.seed,
             points: candidate.points,
             targetLengthMeters: candidate.targetLengthMeters,
@@ -1400,7 +1414,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           });
         }
 
-        console.log("[ors] round-trip-candidate", {
+        this.debugLog("[ors] round-trip-candidate", {
           seed: candidate.seed,
           points: candidate.points,
           targetLengthMeters: candidate.targetLengthMeters,
@@ -1409,7 +1423,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           validCandidates: gated.length,
         });
       } catch (error) {
-        console.log("[ors] round-trip-candidate-failed", {
+        this.debugLog("[ors] round-trip-candidate-failed", {
           seed: candidate.seed,
           phase: candidate.phase,
           reason: error instanceof Error ? error.message : "Unknown error",
@@ -1510,7 +1524,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     candidate: WaypointFallbackCandidate,
   ): Promise<OrsResponse> {
-    console.log("[ors] request-circular-fallback", {
+    this.debugLog("[ors] request-circular-fallback", {
       pattern: candidate.pattern,
       variant: candidate.variant,
       waypoints: candidate.waypoints.length,
@@ -1537,7 +1551,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.log("[ors] circular-fallback-response-error", {
+      this.debugLog("[ors] circular-fallback-response-error", {
         pattern: candidate.pattern,
         variant: candidate.variant,
         status: response.status,
@@ -1610,7 +1624,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           });
         }
       } catch (error) {
-        console.log("[ors] circular-fallback-candidate-failed", {
+        this.debugLog("[ors] circular-fallback-candidate-failed", {
           pattern: candidate.pattern,
           variant: candidate.variant,
           reason: error instanceof Error ? error.message : "Unknown error",
@@ -1679,7 +1693,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           });
         }
       } catch (error) {
-        console.log("[ors] candidate-failed", {
+        this.debugLog("[ors] candidate-failed", {
           end: candidate.endpoint,
           reason: error instanceof Error ? error.message : "Unknown error",
         });
@@ -1730,7 +1744,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     );
     const picked = this.pickDiverseBest(combined, targetDistanceKm);
 
-    console.log("[ors] generated-candidates", {
+    this.debugLog("[ors] generated-candidates", {
       attempted: initialCandidates.length + refinementCandidates.length,
       initialAttempted: initialCandidates.length,
       refinementAttempted: refinementCandidates.length,
@@ -1773,7 +1787,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     );
     const picked = this.pickDiverseCircularBest(guarded, targetDistanceKm);
 
-    console.log("[ors] generated-circular-waypoint-fallback", {
+    this.debugLog("[ors] generated-circular-waypoint-fallback", {
       nonce,
       attempted: candidates.length,
       usableAfterSurface: evaluation.results.length,
@@ -1848,7 +1862,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           : "round_trip_no_valid_candidates"
         : undefined;
 
-    console.log("[ors] generated-circular-round-trip", {
+    this.debugLog("[ors] generated-circular-round-trip", {
       nonce,
       attemptedSeeds: initialCandidates.length + refinementCandidates.length,
       initialAttemptedSeeds: initialCandidates.length,
@@ -1901,7 +1915,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       };
     }
 
-    console.log("[ors] circular-round-trip-fallback", {
+    this.debugLog("[ors] circular-round-trip-fallback", {
       nonce,
       reason: roundTrip.fallbackReason ?? "round_trip_no_valid_candidates",
       targetDistanceKm,
@@ -1982,7 +1996,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
         .slice(0, 3)
         .map((item) => item.route);
 
-      console.log("[ors] directed-final", {
+      this.debugLog("[ors] directed-final", {
         surfaceMode: surfacePreference,
         validCandidates: finalRoutes.length,
         distances: finalRoutes.map((route) => route.distanceKm),

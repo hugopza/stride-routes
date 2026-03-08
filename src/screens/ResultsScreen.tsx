@@ -76,9 +76,13 @@ export function ResultsScreen({ navigation, route }: Props) {
             generationNonce: nextGenerationNonce,
           }),
         );
-      } catch {
+      } catch (error) {
         setList(previousList);
-        Alert.alert("Route error", "Could not regenerate routes right now.");
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not regenerate routes right now.";
+        Alert.alert("Route error", message);
       } finally {
         setIsRegenerating(false);
       }

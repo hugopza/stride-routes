@@ -188,6 +188,7 @@ function toRoute(
   return {
     id,
     name,
+    provider: "fake",
     distanceKm: coherentDistanceKm,
     estimatedDurationMinutes: Math.max(
       5,

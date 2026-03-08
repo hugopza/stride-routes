@@ -13,7 +13,10 @@ type NominatimItem = {
   lon: string;
 };
 
-export async function searchPlaces(query: string): Promise<PlaceSuggestion[]> {
+export async function searchPlaces(
+  query: string,
+  signal?: AbortSignal,
+): Promise<PlaceSuggestion[]> {
   const trimmed = query.trim();
   if (trimmed.length < 3) {
     return [];
@@ -30,6 +33,7 @@ export async function searchPlaces(query: string): Promise<PlaceSuggestion[]> {
     const response = await fetch(
       `https://nominatim.openstreetmap.org/search?${params.toString()}`,
       {
+        signal,
         headers: {
           "Accept-Language": "en",
           "User-Agent": "stride-app",

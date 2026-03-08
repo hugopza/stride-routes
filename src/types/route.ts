@@ -18,6 +18,7 @@ export type RouteCoordinate = {
 export type CandidateRoute = {
   id: string;
   name: string;
+  provider?: "real" | "fake";
   distanceKm: number;
   estimatedDurationMinutes: number;
   elevationGainM: number;

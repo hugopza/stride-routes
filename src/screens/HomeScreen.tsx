@@ -95,6 +95,8 @@ function haversineKm(a: RouteCoordinate, b: RouteCoordinate): number {
 export function HomeScreen({ navigation }: Props) {
   const mapRef = useRef<MapView | null>(null);
   const nonceCounterRef = useRef(0);
+  const originSearchRequestRef = useRef(0);
+  const destinationSearchRequestRef = useRef(0);
 
   const [goalMode, setGoalMode] = useState<"time" | "distance">("time");
   const [routeType, setRouteType] = useState<"point_to_point" | "circular">(
@@ -168,6 +170,7 @@ export function HomeScreen({ navigation }: Props) {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       const query = start.trim();
       if (query.length < 3) {
@@ -176,16 +179,29 @@ export function HomeScreen({ navigation }: Props) {
         return;
       }
 
+      const requestId = originSearchRequestRef.current + 1;
+      originSearchRequestRef.current = requestId;
       setIsSearchingOrigin(true);
-      const results = await searchPlaces(query);
+      const results = await searchPlaces(query, controller.signal);
+      if (
+        requestId !== originSearchRequestRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
       setOriginSuggestions(results);
       setIsSearchingOrigin(false);
     }, 300);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      originSearchRequestRef.current += 1;
+    };
   }, [start]);
 
   useEffect(() => {
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       const query = end.trim();
       if (query.length < 3 || isCircular) {
@@ -194,13 +210,25 @@ export function HomeScreen({ navigation }: Props) {
         return;
       }
 
+      const requestId = destinationSearchRequestRef.current + 1;
+      destinationSearchRequestRef.current = requestId;
       setIsSearchingDestination(true);
-      const results = await searchPlaces(query);
+      const results = await searchPlaces(query, controller.signal);
+      if (
+        requestId !== destinationSearchRequestRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
       setDestinationSuggestions(results);
       setIsSearchingDestination(false);
     }, 300);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      destinationSearchRequestRef.current += 1;
+    };
   }, [end, isCircular]);
 
   const parsedHours = Number(hours) || 0;
@@ -341,8 +369,12 @@ export function HomeScreen({ navigation }: Props) {
       try {
         const routes = await routeGenerationService.generateRoutes(params);
         navigation.navigate("Results", { params, routes });
-      } catch {
-        Alert.alert("Route error", "Could not generate routes right now.");
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not generate routes right now.";
+        Alert.alert("Route error", message);
       } finally {
         setIsGenerating(false);
       }

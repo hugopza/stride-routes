@@ -13,17 +13,44 @@ class RouteGenerationService {
     private readonly openRouteServiceProvider: RouteProvider,
   ) {}
 
+  private debugLog(message: string, payload?: unknown): void {
+    if (!env.routingDebug) {
+      return;
+    }
+
+    if (payload === undefined) {
+      console.log(message);
+      return;
+    }
+
+    console.log(message, payload);
+  }
+
+  private async generateFakeRoutesForDevelopment(
+    params: RouteParams,
+    reason: string,
+  ): Promise<CandidateRoute[]> {
+    const fallbackRoutes = await this.fakeProvider.generateRoutes(params);
+    this.debugLog("[routing] fake-provider-used", {
+      reason,
+      routes: fallbackRoutes.length,
+    });
+    return fallbackRoutes;
+  }
+
   private shouldUseOpenRouteService(params: RouteParams): boolean {
-    const shouldUse = Boolean(
-      env.openRouteServiceApiKey &&
-        params.startCoordinate,
-    );
-    console.log("[routing] provider-check", {
+    const shouldUse = Boolean(env.openRouteServiceApiKey && params.startCoordinate);
+    this.debugLog("[routing] provider-check", {
       hasApiKey: Boolean(env.openRouteServiceApiKey),
       circular: params.circular,
       hasStart: Boolean(params.startCoordinate),
       hasEnd: Boolean(params.endCoordinate),
-      selected: shouldUse ? "openrouteservice" : "fake",
+      selected: shouldUse
+        ? "openrouteservice"
+        : env.allowFakeRoutes
+          ? "fake"
+          : "none",
+      allowFakeRoutes: env.allowFakeRoutes,
     });
     return shouldUse;
   }
@@ -32,33 +59,41 @@ class RouteGenerationService {
     if (this.shouldUseOpenRouteService(params)) {
       try {
         const routes = await this.openRouteServiceProvider.generateRoutes(params);
-        console.log("[routing] provider-used", {
+        this.debugLog("[routing] provider-used", {
           provider: "openrouteservice",
           routes: routes.length,
         });
         return routes;
       } catch (error) {
         if (error instanceof NoSurfaceMatchError) {
-          console.log("[routing] no-surface-match", {
+          this.debugLog("[routing] no-surface-match", {
             provider: "openrouteservice",
             surface: params.surface ?? "mixed",
           });
           return [];
         }
-        console.log("[routing] fallback", {
-          from: "openrouteservice",
-          to: "fake",
-          reason: error instanceof Error ? error.message : "Unknown error",
-        });
+
+        if (env.allowFakeRoutes) {
+          return this.generateFakeRoutesForDevelopment(
+            params,
+            error instanceof Error ? error.message : "Unknown ORS error",
+          );
+        }
+
+        throw new Error("Real route provider failed. Please try again.");
       }
     }
 
-    const fallbackRoutes = await this.fakeProvider.generateRoutes(params);
-    console.log("[routing] provider-used", {
-      provider: "fake",
-      routes: fallbackRoutes.length,
-    });
-    return fallbackRoutes;
+    if (env.allowFakeRoutes) {
+      return this.generateFakeRoutesForDevelopment(
+        params,
+        "OpenRouteService unavailable for current inputs",
+      );
+    }
+
+    throw new Error(
+      "Real route provider is unavailable for the current request.",
+    );
   }
 }
 
