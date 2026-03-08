@@ -33,6 +33,13 @@ type EvaluatedCandidate = {
   score: number;
 };
 
+type CircularLoopCandidate = {
+  via1: RouteCoordinate;
+  via2: RouteCoordinate;
+  baseBearing: number;
+  radiusKm: number;
+};
+
 const KM_PER_LAT_DEGREE = 111.32;
 
 function toPolyline(coordinates: number[][]): RouteCoordinate[] {
@@ -210,6 +217,64 @@ export class OpenRouteServiceProvider implements RouteProvider {
     return normalizedDistanceError * 2.8 + diffKm * 0.2 + geometryPenalty;
   }
 
+  private computePolygonAreaKm2(points: RouteCoordinate[]): number {
+    if (points.length < 3) {
+      return 0;
+    }
+
+    const avgLat =
+      points.reduce((sum, point) => sum + point.latitude, 0) / points.length;
+    const kmPerLon = this.kmPerLonDegree(avgLat);
+    const projected = points.map((point) => ({
+      x: point.longitude * kmPerLon,
+      y: point.latitude * KM_PER_LAT_DEGREE,
+    }));
+
+    let sum = 0;
+    for (let i = 0; i < projected.length; i += 1) {
+      const current = projected[i];
+      const next = projected[(i + 1) % projected.length];
+      sum += current.x * next.y - next.x * current.y;
+    }
+
+    return Math.abs(sum) / 2;
+  }
+
+  private scoreCircularCandidate(
+    route: CandidateRoute,
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+  ): number {
+    const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
+    const normalizedDistanceError =
+      diffKm / Math.max(0.5, targetDistanceKm);
+
+    const end = route.polyline[route.polyline.length - 1];
+    const closureDistanceKm = this.haversineKm(start, end);
+    const closurePenalty = Math.min(1.2, closureDistanceKm * 8);
+
+    const areaKm2 = this.computePolygonAreaKm2(route.polyline);
+    const areaExpectation = Math.max(0.02, (targetDistanceKm * targetDistanceKm) / 18);
+    const loopShapePenalty = areaKm2 >= areaExpectation ? 0 : (areaExpectation - areaKm2) / areaExpectation;
+
+    const geometryPenalty = route.polyline.length >= 30 ? 0 : 0.35;
+
+    const toleranceKm = Math.max(1.0, targetDistanceKm * 0.18);
+    const outlierPenalty =
+      diffKm > toleranceKm
+        ? ((diffKm - toleranceKm) / Math.max(0.5, toleranceKm)) * 4
+        : 0;
+
+    return (
+      normalizedDistanceError * 4.2 +
+      diffKm * 0.65 +
+      outlierPenalty +
+      closurePenalty * 0.9 +
+      loopShapePenalty * 0.8 +
+      geometryPenalty
+    );
+  }
+
   private createRefinementEndpoints(
     start: RouteCoordinate,
     targetDistanceKm: number,
@@ -285,6 +350,169 @@ export class OpenRouteServiceProvider implements RouteProvider {
       id: `ors-generated-${index + 1}`,
       name: index === 0 ? "OpenStreetMap Route" : `Alternative ${index + 1}`,
     }));
+  }
+
+  private pickDiverseCircularBest(
+    scored: EvaluatedCandidate[],
+    targetDistanceKm: number,
+  ): CandidateRoute[] {
+    const strictToleranceKm = Math.max(1.2, targetDistanceKm * 0.22);
+    const acceptable = scored.filter(
+      (item) => Math.abs(item.route.distanceKm - targetDistanceKm) <= strictToleranceKm,
+    );
+    const ranked = acceptable.length > 0 ? acceptable : scored;
+
+    const selected: EvaluatedCandidate[] = [];
+    const minSeparationKm = Math.max(0.18, Math.min(0.9, targetDistanceKm * 0.08));
+
+    for (const candidate of ranked) {
+      const candidateMid = candidate.route.polyline[
+        Math.floor(candidate.route.polyline.length / 2)
+      ];
+      const isTooClose = selected.some((chosen) => {
+        const chosenMid =
+          chosen.route.polyline[Math.floor(chosen.route.polyline.length / 2)];
+        return this.haversineKm(candidateMid, chosenMid) < minSeparationKm;
+      });
+
+      if (!isTooClose) {
+        selected.push(candidate);
+      }
+      if (selected.length === 3) {
+        break;
+      }
+    }
+
+    // Intentionally do not backfill with poor-distance outliers.
+    // Returning fewer high-quality loops is better than 3 weak alternatives.
+
+    return selected.map((item, index) => ({
+      ...item.route,
+      id: `ors-circular-${index + 1}`,
+      name: index === 0 ? "OpenStreetMap Loop" : `Loop Alternative ${index + 1}`,
+    }));
+  }
+
+  private generateCircularLoopCandidates(
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+  ): CircularLoopCandidate[] {
+    const radiusKm = Math.max(0.25, Math.min(6, targetDistanceKm / 3.4));
+    const bases = [0, 60, 120, 180, 240, 300];
+
+    return bases.map((baseBearing) => ({
+      via1: this.offsetCoordinate(start, radiusKm * 0.95, baseBearing - 35),
+      via2: this.offsetCoordinate(start, radiusKm * 1.05, baseBearing + 80),
+      baseBearing,
+      radiusKm,
+    }));
+  }
+
+  private createCircularRefinements(
+    start: RouteCoordinate,
+    evaluated: EvaluatedCandidate[],
+    targetDistanceKm: number,
+  ): CircularLoopCandidate[] {
+    const refinements: CircularLoopCandidate[] = [];
+
+    for (let i = 0; i < Math.min(2, evaluated.length); i += 1) {
+      const result = evaluated[i];
+      const ratio = Math.min(
+        1.3,
+        Math.max(0.75, targetDistanceKm / Math.max(0.2, result.route.distanceKm)),
+      );
+      const tunedRadius = Math.max(0.2, Math.min(7, result.radiusKm * ratio));
+
+      const variants = [result.bearingDeg - 15, result.bearingDeg + 15];
+      for (const bearing of variants) {
+        refinements.push({
+          via1: this.offsetCoordinate(start, tunedRadius * 0.95, bearing - 35),
+          via2: this.offsetCoordinate(start, tunedRadius * 1.05, bearing + 80),
+          baseBearing: bearing,
+          radiusKm: tunedRadius,
+        });
+      }
+    }
+
+    return refinements;
+  }
+
+  private async requestCircularLoop(
+    start: RouteCoordinate,
+    via1: RouteCoordinate,
+    via2: RouteCoordinate,
+  ): Promise<OrsResponse> {
+    console.log("[ors] request-circular", {
+      start,
+      via1,
+      via2,
+      end: start,
+      coordOrder: "[lon, lat]",
+    });
+
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: env.openRouteServiceApiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        coordinates: [
+          [start.longitude, start.latitude],
+          [via1.longitude, via1.latitude],
+          [via2.longitude, via2.latitude],
+          [start.longitude, start.latitude],
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.log("[ors] circular-response-error", {
+        status: response.status,
+        body: errorBody.slice(0, 500),
+      });
+      throw new Error(`ORS circular request failed (${response.status}).`);
+    }
+
+    return (await response.json()) as OrsResponse;
+  }
+
+  private async evaluateCircularCandidates(
+    start: RouteCoordinate,
+    pace: number,
+    targetDistanceKm: number,
+    candidates: CircularLoopCandidate[],
+  ): Promise<EvaluatedCandidate[]> {
+    const results: EvaluatedCandidate[] = [];
+
+    for (const candidate of candidates) {
+      try {
+        const data = await this.requestCircularLoop(
+          start,
+          candidate.via1,
+          candidate.via2,
+        );
+        const mapped = this.mapFeaturesToRoutes(data, pace);
+        if (mapped.length > 0) {
+          const route = mapped[0];
+          results.push({
+            route,
+            endpoint: route.polyline[route.polyline.length - 1],
+            bearingDeg: candidate.baseBearing,
+            radiusKm: candidate.radiusKm,
+            score: this.scoreCircularCandidate(route, start, targetDistanceKm),
+          });
+        }
+      } catch (error) {
+        console.log("[ors] circular-candidate-failed", {
+          baseBearing: candidate.baseBearing,
+          reason: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    return results;
   }
 
   private async evaluateCandidates(
@@ -365,6 +593,52 @@ export class OpenRouteServiceProvider implements RouteProvider {
     return picked;
   }
 
+  private async generateCircularFromStartOnly(
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+    pace: number,
+  ): Promise<CandidateRoute[]> {
+    const initial = this.generateCircularLoopCandidates(start, targetDistanceKm);
+    const initialResults = await this.evaluateCircularCandidates(
+      start,
+      pace,
+      targetDistanceKm,
+      initial,
+    );
+    const bestInitial = [...initialResults]
+      .sort((a, b) => a.score - b.score)
+      .slice(0, 2);
+
+    const refinement = this.createCircularRefinements(
+      start,
+      bestInitial,
+      targetDistanceKm,
+    );
+    const refinementResults = await this.evaluateCircularCandidates(
+      start,
+      pace,
+      targetDistanceKm,
+      refinement,
+    );
+
+    const combined = [...initialResults, ...refinementResults].sort(
+      (a, b) => a.score - b.score,
+    );
+    const picked = this.pickDiverseCircularBest(combined, targetDistanceKm);
+
+    console.log("[ors] generated-circular", {
+      attempted: initial.length + refinement.length,
+      initialAttempted: initial.length,
+      refinementAttempted: refinement.length,
+      usable: combined.length,
+      returned: picked.length,
+      strictToleranceKm: Math.max(1.2, targetDistanceKm * 0.22),
+      distances: picked.map((route) => route.distanceKm),
+    });
+
+    return picked;
+  }
+
   async generateRoutes(params: RouteParams): Promise<CandidateRoute[]> {
     if (!env.openRouteServiceApiKey) {
       throw new Error("Missing EXPO_PUBLIC_ORS_API_KEY");
@@ -383,11 +657,17 @@ export class OpenRouteServiceProvider implements RouteProvider {
           ),
           pace,
         )
-      : await this.generateFromStartOnly(
-          params.startCoordinate,
-          params.targetDistanceKm,
-          pace,
-        );
+      : params.circular
+        ? await this.generateCircularFromStartOnly(
+            params.startCoordinate,
+            params.targetDistanceKm,
+            pace,
+          )
+        : await this.generateFromStartOnly(
+            params.startCoordinate,
+            params.targetDistanceKm,
+            pace,
+          );
 
     if (mapped.length === 0) {
       throw new Error("ORS returned no usable routes.");

@@ -13,7 +13,6 @@ class RouteGenerationService {
   private shouldUseOpenRouteService(params: RouteParams): boolean {
     const shouldUse = Boolean(
       env.openRouteServiceApiKey &&
-        params.circular === false &&
         params.startCoordinate,
     );
     console.log("[routing] provider-check", {
