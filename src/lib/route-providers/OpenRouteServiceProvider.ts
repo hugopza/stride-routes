@@ -19,6 +19,20 @@ type OrsResponse = {
   features?: OrsFeature[];
 };
 
+type EndpointCandidate = {
+  endpoint: RouteCoordinate;
+  bearingDeg: number;
+  radiusKm: number;
+};
+
+type EvaluatedCandidate = {
+  route: CandidateRoute;
+  endpoint: RouteCoordinate;
+  bearingDeg: number;
+  radiusKm: number;
+  score: number;
+};
+
 const KM_PER_LAT_DEGREE = 111.32;
 
 function toPolyline(coordinates: number[][]): RouteCoordinate[] {
@@ -161,19 +175,149 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private generateCandidateEndpoints(
     start: RouteCoordinate,
     targetDistanceKm: number,
-  ): RouteCoordinate[] {
-    const radiusKm = Math.max(0.35, Math.min(8, targetDistanceKm * 0.55));
-    const bearings = [0, 40, 80, 120, 160, 200, 240, 300];
-    return bearings.map((bearing) =>
-      this.offsetCoordinate(start, radiusKm, bearing),
-    );
+  ): EndpointCandidate[] {
+    const radiusKm = Math.max(0.35, Math.min(8, targetDistanceKm * 0.52));
+    const bearings = [0, 45, 90, 135, 180, 225, 270, 315];
+    return bearings.map((bearingDeg) => ({
+      endpoint: this.offsetCoordinate(start, radiusKm, bearingDeg),
+      bearingDeg,
+      radiusKm,
+    }));
+  }
+
+  private haversineKm(a: RouteCoordinate, b: RouteCoordinate): number {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const earthRadiusKm = 6371;
+
+    const dLat = toRad(b.latitude - a.latitude);
+    const dLon = toRad(b.longitude - a.longitude);
+    const lat1 = toRad(a.latitude);
+    const lat2 = toRad(b.latitude);
+
+    const value =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+
+    const c = 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+    return earthRadiusKm * c;
   }
 
   private scoreCandidate(route: CandidateRoute, targetDistanceKm: number): number {
+    const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
     const normalizedDistanceError =
-      Math.abs(route.distanceKm - targetDistanceKm) / Math.max(0.5, targetDistanceKm);
+      diffKm / Math.max(0.5, targetDistanceKm);
     const geometryPenalty = route.polyline.length >= 20 ? 0 : 0.35;
-    return normalizedDistanceError + geometryPenalty;
+    return normalizedDistanceError * 2.8 + diffKm * 0.2 + geometryPenalty;
+  }
+
+  private createRefinementEndpoints(
+    start: RouteCoordinate,
+    targetDistanceKm: number,
+    seed: EvaluatedCandidate[],
+  ): EndpointCandidate[] {
+    const refined: EndpointCandidate[] = [];
+
+    for (const item of seed.slice(0, 2)) {
+      const ratio = Math.min(
+        1.35,
+        Math.max(0.7, targetDistanceKm / Math.max(0.2, item.route.distanceKm)),
+      );
+      const tunedRadius = Math.max(0.3, Math.min(9, item.radiusKm * ratio));
+
+      const localVariants = [
+        { bearingDeg: item.bearingDeg - 14, radiusKm: tunedRadius * 0.95 },
+        { bearingDeg: item.bearingDeg + 14, radiusKm: tunedRadius * 1.05 },
+      ];
+
+      for (const variant of localVariants) {
+        refined.push({
+          endpoint: this.offsetCoordinate(
+            start,
+            variant.radiusKm,
+            variant.bearingDeg,
+          ),
+          bearingDeg: variant.bearingDeg,
+          radiusKm: variant.radiusKm,
+        });
+      }
+    }
+
+    return refined;
+  }
+
+  private pickDiverseBest(
+    scored: EvaluatedCandidate[],
+    targetDistanceKm: number,
+  ): CandidateRoute[] {
+    const selected: EvaluatedCandidate[] = [];
+    const minSeparationKm = Math.max(0.25, Math.min(1.5, targetDistanceKm * 0.15));
+
+    for (const candidate of scored) {
+      const candidateEnd =
+        candidate.route.polyline[candidate.route.polyline.length - 1];
+      const isTooClose = selected.some((chosen) => {
+        const chosenEnd = chosen.route.polyline[chosen.route.polyline.length - 1];
+        return this.haversineKm(candidateEnd, chosenEnd) < minSeparationKm;
+      });
+
+      if (!isTooClose) {
+        selected.push(candidate);
+      }
+      if (selected.length === 3) {
+        break;
+      }
+    }
+
+    // Fill remaining slots with best-scored routes if diversity was too strict.
+    if (selected.length < 3) {
+      for (const candidate of scored) {
+        if (!selected.includes(candidate)) {
+          selected.push(candidate);
+        }
+        if (selected.length === 3) {
+          break;
+        }
+      }
+    }
+
+    return selected.map((item, index) => ({
+      ...item.route,
+      id: `ors-generated-${index + 1}`,
+      name: index === 0 ? "OpenStreetMap Route" : `Alternative ${index + 1}`,
+    }));
+  }
+
+  private async evaluateCandidates(
+    start: RouteCoordinate,
+    pace: number,
+    targetDistanceKm: number,
+    candidates: EndpointCandidate[],
+  ): Promise<EvaluatedCandidate[]> {
+    const results: EvaluatedCandidate[] = [];
+
+    for (const candidate of candidates) {
+      try {
+        const data = await this.requestDirections(start, candidate.endpoint, false);
+        const mapped = this.mapFeaturesToRoutes(data, pace);
+        if (mapped.length > 0) {
+          const route = mapped[0];
+          results.push({
+            route,
+            endpoint: candidate.endpoint,
+            bearingDeg: candidate.bearingDeg,
+            radiusKm: candidate.radiusKm,
+            score: this.scoreCandidate(route, targetDistanceKm),
+          });
+        }
+      } catch (error) {
+        console.log("[ors] candidate-failed", {
+          end: candidate.endpoint,
+          reason: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    return results;
   }
 
   private async generateFromStartOnly(
@@ -181,44 +325,44 @@ export class OpenRouteServiceProvider implements RouteProvider {
     targetDistanceKm: number,
     pace: number,
   ): Promise<CandidateRoute[]> {
-    const endpoints = this.generateCandidateEndpoints(start, targetDistanceKm);
-    const candidates: CandidateRoute[] = [];
-
-    for (const end of endpoints) {
-      try {
-        const data = await this.requestDirections(start, end, false);
-        const mapped = this.mapFeaturesToRoutes(data, pace);
-        if (mapped.length > 0) {
-          candidates.push(mapped[0]);
-        }
-      } catch (error) {
-        console.log("[ors] candidate-failed", {
-          end,
-          reason: error instanceof Error ? error.message : "Unknown error",
-        });
-      }
-    }
-
-    const scored = candidates
-      .map((route) => ({
-        route,
-        score: this.scoreCandidate(route, targetDistanceKm),
-      }))
+    const initialCandidates = this.generateCandidateEndpoints(start, targetDistanceKm);
+    const initialResults = await this.evaluateCandidates(
+      start,
+      pace,
+      targetDistanceKm,
+      initialCandidates,
+    );
+    const topInitial = [...initialResults]
       .sort((a, b) => a.score - b.score)
-      .slice(0, 3)
-      .map((item, index) => ({
-        ...item.route,
-        id: `ors-generated-${index + 1}`,
-        name: index === 0 ? "OpenStreetMap Route" : `Alternative ${index + 1}`,
-      }));
+      .slice(0, 3);
+
+    const refinementCandidates = this.createRefinementEndpoints(
+      start,
+      targetDistanceKm,
+      topInitial,
+    );
+    const refinementResults = await this.evaluateCandidates(
+      start,
+      pace,
+      targetDistanceKm,
+      refinementCandidates,
+    );
+
+    const combined = [...initialResults, ...refinementResults].sort(
+      (a, b) => a.score - b.score,
+    );
+    const picked = this.pickDiverseBest(combined, targetDistanceKm);
 
     console.log("[ors] generated-candidates", {
-      attempted: endpoints.length,
-      usable: candidates.length,
-      returned: scored.length,
+      attempted: initialCandidates.length + refinementCandidates.length,
+      initialAttempted: initialCandidates.length,
+      refinementAttempted: refinementCandidates.length,
+      usable: combined.length,
+      returned: picked.length,
+      bestDistances: picked.map((route) => route.distanceKm),
     });
 
-    return scored;
+    return picked;
   }
 
   async generateRoutes(params: RouteParams): Promise<CandidateRoute[]> {
