@@ -74,6 +74,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
       throw new Error("Missing start/end coordinates for ORS request.");
     }
 
+    console.log("[ors] request", {
+      profile: "foot-walking",
+      start: params.startCoordinate,
+      end: params.endCoordinate,
+      coordOrder: "[lon, lat]",
+    });
+
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: {
@@ -94,14 +101,29 @@ export class OpenRouteServiceProvider implements RouteProvider {
     });
 
     if (!response.ok) {
+      const errorBody = await response.text();
+      console.log("[ors] response-error", {
+        status: response.status,
+        body: errorBody.slice(0, 500),
+      });
       throw new Error(`ORS request failed (${response.status}).`);
     }
 
     const data = (await response.json()) as OrsResponse;
+    console.log("[ors] response-ok", {
+      features: data.features?.length ?? 0,
+    });
     const pace = params.paceMinPerKm && params.paceMinPerKm > 0 ? params.paceMinPerKm : 6;
     const mapped = (data.features ?? [])
       .map((feature, index) => mapFeatureToCandidateRoute(feature, index, pace))
       .filter((route): route is CandidateRoute => route !== null);
+
+    console.log("[ors] mapped", {
+      routes: mapped.length,
+      pointsPerRoute: mapped.map((route) => route.polyline.length),
+      firstRouteStart: mapped[0]?.polyline[0],
+      firstRouteEnd: mapped[0]?.polyline[mapped[0].polyline.length - 1],
+    });
 
     if (mapped.length === 0) {
       throw new Error("ORS returned no usable routes.");

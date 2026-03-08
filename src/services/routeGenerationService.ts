@@ -11,24 +11,46 @@ class RouteGenerationService {
   ) {}
 
   private shouldUseOpenRouteService(params: RouteParams): boolean {
-    return Boolean(
+    const shouldUse = Boolean(
       env.openRouteServiceApiKey &&
         params.circular === false &&
         params.startCoordinate &&
         params.endCoordinate,
     );
+    console.log("[routing] provider-check", {
+      hasApiKey: Boolean(env.openRouteServiceApiKey),
+      circular: params.circular,
+      hasStart: Boolean(params.startCoordinate),
+      hasEnd: Boolean(params.endCoordinate),
+      selected: shouldUse ? "openrouteservice" : "fake",
+    });
+    return shouldUse;
   }
 
   async generateRoutes(params: RouteParams): Promise<CandidateRoute[]> {
     if (this.shouldUseOpenRouteService(params)) {
       try {
-        return await this.openRouteServiceProvider.generateRoutes(params);
-      } catch {
-        // Fallback keeps the flow working when ORS is unavailable.
+        const routes = await this.openRouteServiceProvider.generateRoutes(params);
+        console.log("[routing] provider-used", {
+          provider: "openrouteservice",
+          routes: routes.length,
+        });
+        return routes;
+      } catch (error) {
+        console.log("[routing] fallback", {
+          from: "openrouteservice",
+          to: "fake",
+          reason: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     }
 
-    return this.fakeProvider.generateRoutes(params);
+    const fallbackRoutes = await this.fakeProvider.generateRoutes(params);
+    console.log("[routing] provider-used", {
+      provider: "fake",
+      routes: fallbackRoutes.length,
+    });
+    return fallbackRoutes;
   }
 }
 

@@ -41,6 +41,16 @@ export function RouteDetailScreen({ navigation, route }: Props) {
   }, [navigation, selectedRoute.name]);
 
   useEffect(() => {
+    console.log("[routing-render] route-detail", {
+      routeId: selectedRoute.id,
+      name: selectedRoute.name,
+      points: polyline.length,
+      start,
+      end,
+    });
+  }, [selectedRoute.id, selectedRoute.name, polyline.length, start, end]);
+
+  useEffect(() => {
     if (polyline.length < 2) {
       return;
     }

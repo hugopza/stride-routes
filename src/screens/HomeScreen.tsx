@@ -266,16 +266,16 @@ export function HomeScreen({ navigation }: Props) {
         `Pinned origin (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
       );
       setOriginSuggestions([]);
+      console.log("[routing-ui] origin-picked-map", coordinate);
       return;
     }
 
-    if (!isCircular) {
-      setEndCoordinate(coordinate);
-      setEnd(
-        `Pinned destination (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
-      );
-      setDestinationSuggestions([]);
-    }
+    setEndCoordinate(coordinate);
+    setEnd(
+      `Pinned destination (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
+    );
+    setDestinationSuggestions([]);
+    console.log("[routing-ui] destination-picked-map", coordinate);
   };
 
   const isGeneratedFlowValid = isTimeMode ? isTimeValid : isDistanceValid;
@@ -318,6 +318,14 @@ export function HomeScreen({ navigation }: Props) {
       safety,
       waypoints,
     };
+
+    console.log("[routing-ui] generate", {
+      destinationRequested,
+      startCoordinate: params.startCoordinate,
+      endCoordinate: params.endCoordinate,
+      circular: params.circular,
+      targetDistanceKm: params.targetDistanceKm,
+    });
 
     setIsGenerating(true);
 
