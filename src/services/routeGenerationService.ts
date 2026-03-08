@@ -1,6 +1,9 @@
 import type { CandidateRoute, RouteParams } from "../types/route";
 import { FakeRouteProvider } from "../lib/route-providers/FakeRouteProvider";
-import { OpenRouteServiceProvider } from "../lib/route-providers/OpenRouteServiceProvider";
+import {
+  NoSurfaceMatchError,
+  OpenRouteServiceProvider,
+} from "../lib/route-providers/OpenRouteServiceProvider";
 import type { RouteProvider } from "../lib/route-providers/RouteProvider";
 import { env } from "../config/env";
 
@@ -35,6 +38,13 @@ class RouteGenerationService {
         });
         return routes;
       } catch (error) {
+        if (error instanceof NoSurfaceMatchError) {
+          console.log("[routing] no-surface-match", {
+            provider: "openrouteservice",
+            surface: params.surface ?? "mixed",
+          });
+          return [];
+        }
         console.log("[routing] fallback", {
           from: "openrouteservice",
           to: "fake",
