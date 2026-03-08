@@ -14,8 +14,7 @@ class RouteGenerationService {
     const shouldUse = Boolean(
       env.openRouteServiceApiKey &&
         params.circular === false &&
-        params.startCoordinate &&
-        params.endCoordinate,
+        params.startCoordinate,
     );
     console.log("[routing] provider-check", {
       hasApiKey: Boolean(env.openRouteServiceApiKey),
