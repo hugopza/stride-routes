@@ -4,6 +4,8 @@ const parseBooleanEnv = (value: string | undefined): boolean =>
 
 export const env = {
   openRouteServiceApiKey: process.env.EXPO_PUBLIC_ORS_API_KEY ?? "",
+  supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL ?? "",
+  supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "",
   // Fake routes are opt-in for development/testing only.
   allowFakeRoutes: isDevBuild && parseBooleanEnv(process.env.EXPO_PUBLIC_ALLOW_FAKE_ROUTES),
   // Routing debug logs are opt-in and disabled in production.

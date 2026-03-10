@@ -92,14 +92,6 @@ export function ResultsScreen({ navigation, route }: Props) {
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.summaryCard}>
-          <Text style={styles.eyebrow}>GENERATED ROUTES</Text>
-          <Text style={styles.title}>{list.length} route{list.length === 1 ? "" : "s"} found</Text>
-          <Text style={styles.subtitle}>
-            Review alternatives below and open one to see full details.
-          </Text>
-        </View>
-
         <View style={styles.filterRow}>
           <View style={styles.filterChip}>
             <Text style={styles.filterText}>

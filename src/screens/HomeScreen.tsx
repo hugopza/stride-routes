@@ -16,12 +16,14 @@ import { Chip } from "../components/Chip";
 import { InputRow } from "../components/InputRow";
 import { searchPlaces, type PlaceSuggestion } from "../lib/place-search";
 import type { RoutesStackParamList } from "../navigation/types";
+import { useAuth } from "../providers/AuthProvider";
 import { routeGenerationService } from "../services/routeGenerationService";
 import type { RouteCoordinate, RouteParams } from "../types/route";
 
 type Props = NativeStackScreenProps<RoutesStackParamList, "Home">;
 
 type RouteParamsWithUi = RouteParams & {
+  activity?: "foot" | "road_cycling";
   circular: boolean;
   start?: string;
   end?: string;
@@ -76,6 +78,16 @@ function parseDistance(raw: string): number | null {
   return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
 }
 
+function parseAverageSpeed(raw: string): number | null {
+  const normalized = raw.trim().replace(",", ".");
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(normalized);
+  return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+}
+
 function haversineKm(a: RouteCoordinate, b: RouteCoordinate): number {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const earthRadiusKm = 6371;
@@ -97,16 +109,26 @@ export function HomeScreen({ navigation }: Props) {
   const nonceCounterRef = useRef(0);
   const originSearchRequestRef = useRef(0);
   const destinationSearchRequestRef = useRef(0);
+  const touchedDefaultsRef = useRef({
+    activity: false,
+    routeType: false,
+    start: false,
+    surface: false,
+  });
+  const appliedProfileDefaultsRef = useRef<string | null>(null);
+  const { profile } = useAuth();
 
   const [goalMode, setGoalMode] = useState<"time" | "distance">("time");
   const [routeType, setRouteType] = useState<"point_to_point" | "circular">(
     "point_to_point",
   );
+  const [activity, setActivity] = useState<"foot" | "road_cycling">("foot");
 
   const [hours, setHours] = useState("0");
   const [minutes, setMinutes] = useState("45");
   const [distanceKm, setDistanceKm] = useState("8");
   const [pace, setPace] = useState("5:30");
+  const [averageSpeed, setAverageSpeed] = useState("24");
 
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -142,6 +164,43 @@ export function HomeScreen({ navigation }: Props) {
   const [isSearchingDestination, setIsSearchingDestination] = useState(false);
 
   const isCircular = routeType === "circular";
+
+  useEffect(() => {
+    if (!profile?.id || appliedProfileDefaultsRef.current === profile.id) {
+      return;
+    }
+
+    if (
+      !touchedDefaultsRef.current.start &&
+      !start.trim() &&
+      profile.home_location_name
+    ) {
+      setStart(profile.home_location_name);
+    }
+
+    if (!touchedDefaultsRef.current.routeType && profile.default_route_type) {
+      setRouteType(profile.default_route_type);
+    }
+
+    if (!touchedDefaultsRef.current.surface && profile.default_surface) {
+      setSurface(
+        profile.default_surface.charAt(0).toUpperCase() +
+          profile.default_surface.slice(1),
+      );
+    }
+
+    if (!touchedDefaultsRef.current.activity && profile.default_activity) {
+      setActivity(profile.default_activity);
+    }
+
+    appliedProfileDefaultsRef.current = profile.id;
+  }, [profile, start]);
+
+  useEffect(() => {
+    if (activity === "road_cycling" && surface !== "Asphalt") {
+      setSurface("Asphalt");
+    }
+  }, [activity, surface]);
 
   useEffect(() => {
     if (isCircular) {
@@ -235,6 +294,7 @@ export function HomeScreen({ navigation }: Props) {
   const parsedMinutes = Number(minutes) || 0;
   const totalMinutes = parsedHours * 60 + parsedMinutes;
   const normalizedPace = parsePace(pace);
+  const normalizedAverageSpeed = parseAverageSpeed(averageSpeed);
   const normalizedDistance = parseDistance(distanceKm);
 
   const directDistanceKm =
@@ -244,9 +304,13 @@ export function HomeScreen({ navigation }: Props) {
 
   const targetDistanceKm = isCircular
     ? goalMode === "time"
-      ? totalMinutes > 0 && normalizedPace
-        ? totalMinutes / normalizedPace
-        : 0
+      ? activity === "road_cycling"
+        ? totalMinutes > 0 && normalizedAverageSpeed
+          ? (totalMinutes / 60) * normalizedAverageSpeed
+          : 0
+        : totalMinutes > 0 && normalizedPace
+          ? totalMinutes / normalizedPace
+          : 0
       : (normalizedDistance ?? 0)
     : directDistanceKm;
 
@@ -263,9 +327,19 @@ export function HomeScreen({ navigation }: Props) {
   const paceError =
     submitAttempted &&
     isCircular &&
+    activity !== "road_cycling" &&
     goalMode === "time" &&
     normalizedPace === null
       ? "Pace is required. Use mm:ss or decimal format."
+      : undefined;
+
+  const averageSpeedError =
+    submitAttempted &&
+    isCircular &&
+    activity === "road_cycling" &&
+    goalMode === "time" &&
+    normalizedAverageSpeed === null
+      ? "Average speed is required and must be greater than 0."
       : undefined;
 
   const distanceError =
@@ -278,12 +352,14 @@ export function HomeScreen({ navigation }: Props) {
 
   const isCircularInputValid =
     goalMode === "time"
-      ? totalMinutes > 0 && normalizedPace !== null
+      ? activity === "road_cycling"
+        ? totalMinutes > 0 && normalizedAverageSpeed !== null
+        : totalMinutes > 0 && normalizedPace !== null
       : normalizedDistance !== null;
 
-  const isFormValid = Boolean(startCoordinate) && (isCircular
-    ? isCircularInputValid
-    : Boolean(endCoordinate));
+  const isFormValid =
+    Boolean(startCoordinate) &&
+    (isCircular ? isCircularInputValid : Boolean(endCoordinate));
 
   const centerMap = () => {
     const center = startCoordinate ?? userLocation ?? DEFAULT_REGION;
@@ -304,6 +380,7 @@ export function HomeScreen({ navigation }: Props) {
   };
 
   const onSelectOrigin = (suggestion: PlaceSuggestion) => {
+    touchedDefaultsRef.current.start = true;
     setStart(suggestion.label);
     setStartCoordinate(suggestion.coordinate);
     setOriginSuggestions([]);
@@ -319,6 +396,7 @@ export function HomeScreen({ navigation }: Props) {
     const coordinate = event.nativeEvent.coordinate;
 
     if (selectingPoint === "start") {
+      touchedDefaultsRef.current.start = true;
       setStartCoordinate(coordinate);
       setStart(
         `Pinned origin (${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)})`,
@@ -347,10 +425,15 @@ export function HomeScreen({ navigation }: Props) {
     const generationNonce = Date.now() + nonceCounterRef.current;
 
     const params: RouteParamsWithUi = {
+      activity,
       goalMode,
-      timeMinutes:
-        isCircular && goalMode === "time" ? totalMinutes : undefined,
-      paceMinPerKm: normalizedPace ?? undefined,
+      timeMinutes: isCircular && goalMode === "time" ? totalMinutes : undefined,
+      paceMinPerKm:
+        activity === "road_cycling"
+          ? normalizedAverageSpeed
+            ? 60 / normalizedAverageSpeed
+            : undefined
+          : normalizedPace ?? undefined,
       targetDistanceKm,
       generationNonce,
       circular: isCircular,
@@ -383,13 +466,6 @@ export function HomeScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.hero}>
-        <Text style={styles.heroTitle}>Build your next route</Text>
-        <Text style={styles.heroSubtitle}>
-          Choose your preferences, then review generated alternatives on the next screen.
-        </Text>
-      </View>
-
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>GOAL</Text>
         <View style={styles.goalRow}>
@@ -414,13 +490,43 @@ export function HomeScreen({ navigation }: Props) {
           <Chip
             label="Point to point"
             selected={!isCircular}
-            onPress={() => setRouteType("point_to_point")}
+            onPress={() => {
+              touchedDefaultsRef.current.routeType = true;
+              setRouteType("point_to_point");
+            }}
             style={{ flex: 1 }}
           />
           <Chip
             label="Circular"
             selected={isCircular}
-            onPress={() => setRouteType("circular")}
+            onPress={() => {
+              touchedDefaultsRef.current.routeType = true;
+              setRouteType("circular");
+            }}
+            style={{ flex: 1 }}
+          />
+        </View>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>ACTIVITY</Text>
+        <View style={styles.goalRow}>
+          <Chip
+            label="Foot"
+            selected={activity === "foot"}
+            onPress={() => {
+              touchedDefaultsRef.current.activity = true;
+              setActivity("foot");
+            }}
+            style={{ flex: 1 }}
+          />
+          <Chip
+            label="Road cycling"
+            selected={activity === "road_cycling"}
+            onPress={() => {
+              touchedDefaultsRef.current.activity = true;
+              setActivity("road_cycling");
+            }}
             style={{ flex: 1 }}
           />
         </View>
@@ -432,6 +538,7 @@ export function HomeScreen({ navigation }: Props) {
           placeholder="Search address, city, postcode, POI..."
           value={start}
           onChangeText={(text) => {
+            touchedDefaultsRef.current.start = true;
             setStart(text);
             setStartCoordinate(undefined);
           }}
@@ -501,14 +608,36 @@ export function HomeScreen({ navigation }: Props) {
                 />
               </View>
               <InputRow
-                label="Target pace (min/km)"
-                value={pace}
-                onChangeText={setPace}
-                keyboardType={Platform.select({
-                  ios: "numbers-and-punctuation",
-                  default: "default",
-                })}
-                error={paceError}
+                label={
+                  activity === "road_cycling"
+                    ? "Average speed (km/h)"
+                    : "Target pace (min/km)"
+                }
+                placeholder={
+                  activity === "road_cycling" ? "e.g. 24" : undefined
+                }
+                hint={
+                  activity === "road_cycling"
+                    ? "Used to estimate distance from available time."
+                    : undefined
+                }
+                value={activity === "road_cycling" ? averageSpeed : pace}
+                onChangeText={
+                  activity === "road_cycling" ? setAverageSpeed : setPace
+                }
+                keyboardType={
+                  activity === "road_cycling"
+                    ? "decimal-pad"
+                    : Platform.select({
+                        ios: "numbers-and-punctuation",
+                        default: "default",
+                      })
+                }
+                error={
+                  activity === "road_cycling"
+                    ? averageSpeedError
+                    : paceError
+                }
               />
             </>
           ) : (
@@ -571,16 +700,35 @@ export function HomeScreen({ navigation }: Props) {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>SURFACE</Text>
-        <View style={styles.chipRow}>
-          {["Trail", "Asphalt", "Mixed"].map((s) => (
-            <Chip
-              key={s}
-              label={s}
-              selected={surface === s}
-              onPress={() => setSurface(s)}
-            />
-          ))}
-        </View>
+        {activity === "road_cycling" ? (
+          <View style={styles.chipRow}>
+            {["Asphalt"].map((s) => (
+              <Chip
+                key={s}
+                label={s}
+                selected={surface === s}
+                onPress={() => {
+                  touchedDefaultsRef.current.surface = true;
+                  setSurface(s);
+                }}
+              />
+            ))}
+          </View>
+        ) : (
+          <View style={styles.chipRow}>
+            {["Trail", "Asphalt", "Mixed"].map((s) => (
+              <Chip
+                key={s}
+                label={s}
+                selected={surface === s}
+                onPress={() => {
+                  touchedDefaultsRef.current.surface = true;
+                  setSurface(s);
+                }}
+              />
+            ))}
+          </View>
+        )}
       </View>
 
       <View style={styles.section}>
@@ -613,7 +761,7 @@ export function HomeScreen({ navigation }: Props) {
 
       <View style={styles.footer}>
         <Button
-          label="Generate route"
+          label="Generate your route"
           onPress={onGenerate}
           disabled={!isFormValid}
           loading={isGenerating}
@@ -672,6 +820,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  lockedField: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#f9fafb",
+  },
+  lockedFieldText: {
+    fontSize: 14,
+    color: "#4b5563",
+    fontWeight: "500",
   },
   waypointsBox: {
     borderWidth: 1,

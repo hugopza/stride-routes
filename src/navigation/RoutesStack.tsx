@@ -21,7 +21,7 @@ export function RoutesStack() {
       <Stack.Screen
         name="Home"
         component={HomeScreen}
-        options={{ title: "Generate route" }}
+        options={{ title: "Build your route" }}
       />
       <Stack.Screen
         name="Results"

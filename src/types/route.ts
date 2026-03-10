@@ -1,4 +1,5 @@
 export type RouteParams = {
+  activity?: "foot" | "road_cycling" | string;
   goalMode?: "time" | "distance";
   timeMinutes?: number;
   paceMinPerKm?: number;
