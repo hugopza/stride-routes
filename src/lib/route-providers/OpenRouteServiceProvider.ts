@@ -7,10 +7,13 @@ type OrsFeature = {
     coordinates?: number[][];
   };
   properties?: {
+    ascent?: number;
+    descent?: number;
     summary?: {
       distance?: number;
       duration?: number;
       ascent?: number;
+      descent?: number;
     };
     extras?: {
       surface?: OrsExtraInfo;
@@ -164,6 +167,33 @@ function toPolyline(coordinates: number[][]): RouteCoordinate[] {
     }));
 }
 
+function deriveAscentFromCoordinates(coordinates: number[][]): number | null {
+  if (coordinates.length < 2 || coordinates.some((coordinate) => coordinate.length < 3)) {
+    return null;
+  }
+
+  let totalAscent = 0;
+
+  for (let i = 1; i < coordinates.length; i += 1) {
+    const previousElevation = coordinates[i - 1][2];
+    const currentElevation = coordinates[i][2];
+
+    if (
+      !Number.isFinite(previousElevation) ||
+      !Number.isFinite(currentElevation)
+    ) {
+      return null;
+    }
+
+    const delta = currentElevation - previousElevation;
+    if (delta > 0) {
+      totalAscent += delta;
+    }
+  }
+
+  return Math.max(0, Math.round(totalAscent));
+}
+
 function mapFeatureToCandidateRoute(
   feature: OrsFeature,
   index: number,
@@ -183,10 +213,12 @@ function mapFeatureToCandidateRoute(
     5,
     Math.round((feature.properties?.summary?.duration ?? distanceKm * fallbackPaceMinPerKm * 60) / 60),
   );
-  const elevationGainM = Math.max(
-    0,
-    Math.round(feature.properties?.summary?.ascent ?? 0),
-  );
+  const rawAscent =
+    feature.properties?.summary?.ascent ?? feature.properties?.ascent;
+  const elevationGainM =
+    typeof rawAscent === "number" && Number.isFinite(rawAscent)
+      ? Math.max(0, Math.round(rawAscent))
+      : deriveAscentFromCoordinates(rawCoordinates);
 
   return {
     id: `ors-route-${index + 1}`,
@@ -699,6 +731,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       end,
       coordOrder: "[lon, lat]",
       allowAlternatives,
+      elevation: true,
     });
 
     const response = await fetch(this.endpoint, {
@@ -712,6 +745,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           [start.longitude, start.latitude],
           [end.longitude, end.latitude],
         ],
+        elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
         ...(allowAlternatives
           ? {
@@ -737,6 +771,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
     const data = (await response.json()) as OrsResponse;
     this.debugLog("[ors] response-ok", {
       features: data.features?.length ?? 0,
+      ascentSummaries: (data.features ?? []).map(
+        (feature) =>
+          feature.properties?.summary?.ascent ?? feature.properties?.ascent ?? null,
+      ),
+      has3dGeometry: (data.features ?? []).map((feature) =>
+        (feature.geometry?.coordinates ?? []).some((coordinate) => coordinate.length >= 3),
+      ),
     });
     return data;
   }
@@ -835,6 +876,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       targetLengthMeters: candidate.targetLengthMeters,
       phase: candidate.phase,
       coordOrder: "[lon, lat]",
+      elevation: true,
     });
 
     const response = await fetch(this.endpoint, {
@@ -852,6 +894,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             seed: candidate.seed,
           },
         },
+        elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
       }),
     });
@@ -876,6 +919,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
       phase: candidate.phase,
       features: data.features?.length ?? 0,
       extrasPresent: extrasPresence,
+      ascentSummaries: (data.features ?? []).map(
+        (feature) =>
+          feature.properties?.summary?.ascent ?? feature.properties?.ascent ?? null,
+      ),
+      has3dGeometry: (data.features ?? []).map((feature) =>
+        (feature.geometry?.coordinates ?? []).some((coordinate) => coordinate.length >= 3),
+      ),
     });
 
     return data;
@@ -1531,6 +1581,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       baseBearingDeg: Number(candidate.baseBearingDeg.toFixed(1)),
       radiusKm: Number(candidate.radiusKm.toFixed(2)),
       coordOrder: "[lon, lat]",
+      elevation: true,
     });
 
     const response = await fetch(this.endpoint, {
@@ -1545,6 +1596,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
           ...candidate.waypoints.map((point) => [point.longitude, point.latitude]),
           [start.longitude, start.latitude],
         ],
+        elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
       }),
     });
@@ -1560,7 +1612,20 @@ export class OpenRouteServiceProvider implements RouteProvider {
       throw new Error(`ORS circular fallback request failed (${response.status}).`);
     }
 
-    return (await response.json()) as OrsResponse;
+    const data = (await response.json()) as OrsResponse;
+    this.debugLog("[ors] circular-fallback-response-ok", {
+      pattern: candidate.pattern,
+      variant: candidate.variant,
+      features: data.features?.length ?? 0,
+      ascentSummaries: (data.features ?? []).map(
+        (feature) =>
+          feature.properties?.summary?.ascent ?? feature.properties?.ascent ?? null,
+      ),
+      has3dGeometry: (data.features ?? []).map((feature) =>
+        (feature.geometry?.coordinates ?? []).some((coordinate) => coordinate.length >= 3),
+      ),
+    });
+    return data;
   }
 
   private async evaluateWaypointFallbackCandidates(

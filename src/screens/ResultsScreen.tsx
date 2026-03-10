@@ -1,3 +1,4 @@
+import { MaterialIcons } from "@expo/vector-icons";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useLayoutEffect, useState } from "react";
 import {
@@ -8,7 +9,6 @@ import {
   Text,
   View,
 } from "react-native";
-
 import { Button } from "../components/Button";
 import { RouteCard } from "../components/RouteCard";
 import type { RoutesStackParamList } from "../navigation/types";
@@ -22,13 +22,11 @@ export function ResultsScreen({ navigation, route }: Props) {
 
   const [list, setList] = useState<CandidateRoute[]>(routes);
   const [isRegenerating, setIsRegenerating] = useState(false);
-  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [generationNonce, setGenerationNonce] = useState(
     params.generationNonce ?? Date.now(),
   );
 
   useEffect(() => {
-    setSelectedRouteId(null);
     setGenerationNonce(params.generationNonce ?? Date.now());
     setList([]);
     const timeout = setTimeout(() => {
@@ -48,12 +46,15 @@ export function ResultsScreen({ navigation, route }: Props) {
 
   useLayoutEffect(() => {
     navigation.setOptions({
+      headerBackVisible: false,
+      headerLeft: () => null,
       headerRight: () => (
         <Pressable
           onPress={() => navigation.goBack()}
           style={styles.headerButton}
         >
-          <Text style={styles.headerButtonText}>Refine</Text>
+          <Text style={styles.headerButtonText}>Refine </Text>
+          <MaterialIcons name="manage-search" size={18} color="#111827" />
         </Pressable>
       ),
     });
@@ -64,7 +65,6 @@ export function ResultsScreen({ navigation, route }: Props) {
     const nextGenerationNonce = generationNonce + 1;
 
     setIsRegenerating(true);
-    setSelectedRouteId(null);
     setList([]);
     setGenerationNonce(nextGenerationNonce);
 
@@ -90,66 +90,36 @@ export function ResultsScreen({ navigation, route }: Props) {
   };
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.filterRow}>
-          <View style={styles.filterChip}>
-            <Text style={styles.filterText}>
-              ~{params.targetDistanceKm.toFixed(1)} km
-            </Text>
-          </View>
-          <View style={styles.filterChip}>
-            <Text style={styles.filterText}>
-              {params.goalMode === "distance"
-                ? "Distance goal"
-                : `~${Math.round(params.timeMinutes ?? 0)} min`}
-            </Text>
-          </View>
-          <View style={styles.filterChip}>
-            <Text style={styles.filterText}>
-              {params.paceMinPerKm
-                ? `Pace ${params.paceMinPerKm.toFixed(2)}`
-                : "Pace optional"}
-            </Text>
-          </View>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {list.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyTitle}>No routes available</Text>
+          <Text style={styles.emptyText}>
+            Try regenerating with the same inputs.
+          </Text>
+          <Button
+            label="Regenerate"
+            variant="outline"
+            onPress={onRegenerate}
+            loading={isRegenerating}
+          />
         </View>
-
-        {list.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No routes available</Text>
-            <Text style={styles.emptyText}>
-              Try regenerating with the same inputs.
-            </Text>
-            <Button
-              label="Regenerate"
-              variant="outline"
-              onPress={onRegenerate}
-              loading={isRegenerating}
-            />
-          </View>
-        ) : (
-          list.map((candidate, index) => (
-            <RouteCard
-              key={`${candidate.id}-${index}`}
-              route={candidate}
-              onPress={() => {
-                if (selectedRouteId !== candidate.id) {
-                  setSelectedRouteId(candidate.id);
-                }
-                navigation.navigate("RouteDetail", { route: candidate });
-              }}
-              tags={
-                index === 0
-                  ? ["FLATTER", "MIXED"]
-                  : index === 1
-                    ? ["URBAN"]
-                    : []
-              }
-            />
-          ))
-        )}
-      </ScrollView>
-
+      ) : (
+        list.map((candidate, index) => (
+          <RouteCard
+            key={`${candidate.id}-${index}`}
+            route={candidate}
+            title={`Route ${index + 1}`}
+            timeLabel={params.goalMode === "time" ? undefined : "N/A"}
+            onPress={() => {
+              navigation.navigate("RouteDetail", { route: candidate });
+            }}
+            tags={
+              index === 0 ? ["FLATTER", "MIXED"] : index === 1 ? ["URBAN"] : []
+            }
+          />
+        ))
+      )}
       <View style={styles.footer}>
         <Button
           label="Regenerate"
@@ -159,7 +129,7 @@ export function ResultsScreen({ navigation, route }: Props) {
           loading={isRegenerating}
         />
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -170,7 +140,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
-    paddingBottom: 100,
+    paddingBottom: 32,
   },
   summaryCard: {
     borderWidth: 1,
@@ -249,15 +219,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   footer: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: 16,
-    paddingBottom: 32,
-    backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderTopColor: "#e5e7eb",
+    marginTop: 8,
   },
   regenerateButton: {
     backgroundColor: "#f9fafb",

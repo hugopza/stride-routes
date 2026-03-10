@@ -2,6 +2,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { CandidateRoute } from "../types/route";
 import { Button } from "./Button";
 import { Ionicons } from "@expo/vector-icons";
+import { RouteMapPreview } from "./RouteMapPreview";
 
 interface RouteCardProps {
   route: CandidateRoute;
@@ -10,23 +11,38 @@ interface RouteCardProps {
   showMap?: boolean;
   location?: string;
   isSaved?: boolean;
+  title?: string;
+  timeLabel?: string;
 }
 
-export function RouteCard({ route, onPress, tags, showMap = true, location, isSaved }: RouteCardProps) {
+export function RouteCard({
+  route,
+  onPress,
+  tags,
+  showMap = true,
+  location,
+  isSaved,
+  title,
+  timeLabel,
+}: RouteCardProps) {
+  const elevationLabel =
+    typeof route.elevationGainM === "number" &&
+    Number.isFinite(route.elevationGainM)
+    ? `+${route.elevationGainM} m`
+    : "N/A";
+
   return (
     <Pressable style={styles.card} onPress={onPress}>
       {showMap && (
         <View style={styles.mapContainer}>
-          <View style={styles.mapPlaceholder}>
-            <Text style={styles.mapText}>Map Preview</Text>
-          </View>
+          <RouteMapPreview polyline={route.polyline ?? []} height={140} />
         </View>
       )}
 
       <View style={styles.content}>
         <View style={styles.header}>
           <View style={styles.titleContainer}>
-            <Text style={styles.name}>{route.name}</Text>
+            <Text style={styles.name}>{title ?? route.name}</Text>
             {location ? (
               <View style={styles.locationRow}>
                 <Ionicons name="location-sharp" size={14} color="#6b7280" />
@@ -53,12 +69,12 @@ export function RouteCard({ route, onPress, tags, showMap = true, location, isSa
           <View style={styles.statDivider} />
           <View style={styles.statCol}>
             <Text style={styles.statLabel}>TIME</Text>
-            <Text style={styles.statValue}>{route.estimatedDurationMinutes} min</Text>
+            <Text style={styles.statValue}>{timeLabel ?? `${route.estimatedDurationMinutes} min`}</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statCol}>
             <Text style={styles.statLabel}>ELEV.</Text>
-            <Text style={styles.statValue}>+{route.elevationGainM} m</Text>
+            <Text style={styles.statValue}>{elevationLabel}</Text>
           </View>
         </View>
 
@@ -93,16 +109,6 @@ const styles = StyleSheet.create({
     position: "relative",
     borderBottomWidth: 1,
     borderBottomColor: "#e5e7eb",
-  },
-  mapPlaceholder: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  mapText: {
-    color: "#9ca3af",
-    fontWeight: "600",
-    position: "absolute",
   },
   content: {
     padding: 16,
@@ -180,11 +186,8 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingVertical: 12,
-    backgroundColor: "#f3f4f6",
+    backgroundColor: "#111827",
     elevation: 0,
     shadowOpacity: 0,
   },
-  buttonText: {
-    color: "#111827",
-  }
 });

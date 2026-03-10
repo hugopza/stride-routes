@@ -1,17 +1,10 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import { useState } from "react";
+import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
+import { RouteMapPreview } from "../components/RouteMapPreview";
 import { exportPolylineAsGpx } from "../lib/gpx";
 import type { RoutesStackParamList } from "../navigation/types";
 
@@ -21,48 +14,10 @@ export function RouteDetailScreen({ navigation, route }: Props) {
   const { route: selectedRoute } = route.params;
   const [feedback, setFeedback] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
-  const mapRef = useRef<MapView | null>(null);
   const polyline = (selectedRoute.polyline ?? []).filter(
     (point) =>
       Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
   );
-  const start = polyline[0];
-  const end = polyline[polyline.length - 1];
-  const isClosedLoop = Boolean(
-    start &&
-      end &&
-      Math.abs(start.latitude - end.latitude) < 0.0002 &&
-      Math.abs(start.longitude - end.longitude) < 0.0002,
-  );
-
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: selectedRoute.name,
-      headerRight: () => (
-        <Pressable
-          onPress={() => Alert.alert("Share", "Sharing route...")}
-          style={{ paddingLeft: 10 }}
-        >
-          <Text style={{ fontSize: 20 }}>Share</Text>
-        </Pressable>
-      ),
-    });
-  }, [navigation, selectedRoute.name]);
-
-  useEffect(() => {
-    if (polyline.length < 2) {
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      mapRef.current?.fitToCoordinates(polyline, {
-        edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
-        animated: true,
-      });
-    }, 120);
-
-    return () => clearTimeout(timeout);
-  }, [polyline]);
 
   const toggleFeedback = (f: string) => {
     if (feedback.includes(f)) {
@@ -71,6 +26,12 @@ export function RouteDetailScreen({ navigation, route }: Props) {
       setFeedback([...feedback, f]);
     }
   };
+
+  const elevationLabel =
+    typeof selectedRoute.elevationGainM === "number" &&
+    Number.isFinite(selectedRoute.elevationGainM)
+      ? `${selectedRoute.elevationGainM} m`
+      : "N/A";
 
   const onExportGpx = async () => {
     if (selectedRoute.provider === "fake") {
@@ -104,28 +65,7 @@ export function RouteDetailScreen({ navigation, route }: Props) {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.mapCard}>
-          {polyline.length > 1 ? (
-            <MapView ref={mapRef} style={styles.map}>
-              <Polyline
-                coordinates={polyline}
-                strokeColor="#0f172a"
-                strokeWidth={4}
-              />
-              {start ? (
-                <Marker
-                  coordinate={start}
-                  title={isClosedLoop ? "Start / End" : "Start"}
-                />
-              ) : null}
-              {!isClosedLoop && end ? (
-                <Marker coordinate={end} title="End" />
-              ) : null}
-            </MapView>
-          ) : (
-            <View style={styles.mapPlaceholder}>
-              <Text style={styles.mapText}>Route preview unavailable</Text>
-            </View>
-          )}
+          <RouteMapPreview polyline={polyline} height={240} interactive />
         </View>
 
         <View style={styles.statsCard}>
@@ -149,9 +89,7 @@ export function RouteDetailScreen({ navigation, route }: Props) {
             <View style={styles.statDivider} />
             <View style={styles.statCol}>
               <Text style={styles.statLabel}>ELEVATION</Text>
-              <Text style={styles.statValue}>
-                {selectedRoute.elevationGainM} m
-              </Text>
+              <Text style={styles.statValue}>{elevationLabel}</Text>
             </View>
           </View>
           <Text style={styles.surfaceText}>Surface estimate: Mixed</Text>
@@ -216,22 +154,6 @@ const styles = StyleSheet.create({
     borderColor: "#f1f5f9",
     overflow: "hidden",
     marginBottom: 16,
-  },
-  map: {
-    height: 240,
-    width: "100%",
-  },
-  mapPlaceholder: {
-    height: 240,
-    backgroundColor: "#f1f5f9",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 16,
-  },
-  mapText: {
-    color: "#94a3b8",
-    fontSize: 16,
-    fontWeight: "500",
   },
   statsCard: {
     borderWidth: 1,

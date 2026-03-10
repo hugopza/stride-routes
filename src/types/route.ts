@@ -22,6 +22,6 @@ export type CandidateRoute = {
   provider?: "real" | "fake";
   distanceKm: number;
   estimatedDurationMinutes: number;
-  elevationGainM: number;
+  elevationGainM: number | null;
   polyline: RouteCoordinate[];
 };
