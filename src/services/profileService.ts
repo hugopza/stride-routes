@@ -45,6 +45,9 @@ function stripUndefined<T extends Record<string, unknown>>(value: T): T {
 function normalizeActivity(
   value: string | null | undefined,
 ): Profile["default_activity"] {
+  if (value === undefined || value === null) {
+    return null;
+  }
   if (value === "road_cycling") {
     return "road_cycling";
   }
@@ -80,7 +83,10 @@ function normalizeProfile(row: ProfileRow): Profile {
 function normalizeProfileInput(
   input: CreateProfileInput | UpdateProfileInput,
 ): CreateProfileInput | UpdateProfileInput {
-  const normalizedActivity = normalizeActivity(input.default_activity);
+  const normalizedActivity =
+    input.default_activity === undefined
+      ? undefined
+      : normalizeActivity(input.default_activity);
 
   return stripUndefined({
     ...input,
@@ -90,6 +96,22 @@ function normalizeProfileInput(
         ? "asphalt"
         : input.default_surface,
   });
+}
+
+function buildCreateProfilePayload(input: CreateProfileInput): CreateProfileInput {
+  const normalized = normalizeProfileInput(input);
+  const defaultActivity = normalized.default_activity ?? "foot";
+  const defaultSurface =
+    defaultActivity === "road_cycling"
+      ? "asphalt"
+      : normalized.default_surface ?? "mixed";
+
+  return {
+    ...normalized,
+    default_activity: defaultActivity,
+    default_surface: defaultSurface,
+    default_route_type: normalized.default_route_type ?? "point_to_point",
+  };
 }
 
 export async function getMyProfile(): Promise<Profile | null> {
@@ -115,7 +137,7 @@ export async function createMyProfile(
   const userId = await requireAuthenticatedUserId();
   const payload = {
     id: userId,
-    ...normalizeProfileInput(input),
+    ...buildCreateProfilePayload(input),
   };
 
   const { data, error } = await supabase

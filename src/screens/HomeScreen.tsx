@@ -1,3 +1,4 @@
+import { MaterialIcons } from "@expo/vector-icons";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -176,6 +177,12 @@ export function HomeScreen({ navigation }: Props) {
       profile.home_location_name
     ) {
       setStart(profile.home_location_name);
+      if (profile.home_lat != null && profile.home_lng != null) {
+        setStartCoordinate({
+          latitude: profile.home_lat,
+          longitude: profile.home_lng,
+        });
+      }
     }
 
     if (!touchedDefaultsRef.current.routeType && profile.default_route_type) {
@@ -433,7 +440,7 @@ export function HomeScreen({ navigation }: Props) {
           ? normalizedAverageSpeed
             ? 60 / normalizedAverageSpeed
             : undefined
-          : normalizedPace ?? undefined,
+          : (normalizedPace ?? undefined),
       targetDistanceKm,
       generationNonce,
       circular: isCircular,
@@ -519,6 +526,13 @@ export function HomeScreen({ navigation }: Props) {
               setActivity("foot");
             }}
             style={{ flex: 1 }}
+            leftAccessory={
+              <MaterialIcons
+                name="directions-walk"
+                size={20}
+                color={activity === "foot" ? "#fff" : "#111827"}
+              />
+            }
           />
           <Chip
             label="Road cycling"
@@ -528,6 +542,13 @@ export function HomeScreen({ navigation }: Props) {
               setActivity("road_cycling");
             }}
             style={{ flex: 1 }}
+            leftAccessory={
+              <MaterialIcons
+                name="directions-bike"
+                size={20}
+                color={activity === "road_cycling" ? "#fff" : "#111827"}
+              />
+            }
           />
         </View>
       </View>
@@ -543,6 +564,9 @@ export function HomeScreen({ navigation }: Props) {
             setStartCoordinate(undefined);
           }}
           error={originError}
+          rightAccessory={
+            <MaterialIcons name="location-on" size={20} color="#9ca3af" />
+          }
         />
         {isSearchingOrigin ? (
           <Text style={styles.searchHint}>Searching...</Text>
@@ -569,6 +593,9 @@ export function HomeScreen({ navigation }: Props) {
               setEndCoordinate(undefined);
             }}
             error={destinationError}
+            rightAccessory={
+              <MaterialIcons name="location-on" size={20} color="#9ca3af" />
+            }
           />
           {isSearchingDestination ? (
             <Text style={styles.searchHint}>Searching...</Text>
@@ -634,9 +661,7 @@ export function HomeScreen({ navigation }: Props) {
                       })
                 }
                 error={
-                  activity === "road_cycling"
-                    ? averageSpeedError
-                    : paceError
+                  activity === "road_cycling" ? averageSpeedError : paceError
                 }
               />
             </>

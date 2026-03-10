@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -12,6 +13,7 @@ interface ButtonProps extends PressableProps {
   label: string;
   variant?: "primary" | "outline" | "ghost";
   loading?: boolean;
+  leftAccessory?: ReactNode;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -20,6 +22,7 @@ export function Button({
   variant = "primary",
   loading,
   disabled,
+  leftAccessory,
   style,
   ...props
 }: ButtonProps) {
@@ -44,16 +47,20 @@ export function Button({
       {loading ? (
         <ActivityIndicator color={isPrimary ? "#fff" : "#111827"} />
       ) : (
-        <Text
-          style={[
-            styles.text,
-            isPrimary && styles.textPrimary,
-            isOutline && styles.textOutline,
-            isGhost && styles.textGhost,
-          ]}
-        >
-          {label}
-        </Text>
+        <>
+          {leftAccessory}
+          <Text
+            style={[
+              styles.text,
+              isPrimary && styles.textPrimary,
+              isOutline && styles.textOutline,
+              isGhost && styles.textGhost,
+              leftAccessory !== undefined && styles.textWithAccessory,
+            ]}
+          >
+            {label}
+          </Text>
+        </>
       )}
     </Pressable>
   );
@@ -100,5 +107,8 @@ const styles = StyleSheet.create({
   textGhost: {
     color: "#111827",
     fontWeight: "600",
+  },
+  textWithAccessory: {
+    marginLeft: 8,
   },
 });

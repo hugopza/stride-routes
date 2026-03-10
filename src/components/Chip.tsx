@@ -1,12 +1,26 @@
-import { Pressable, StyleSheet, Text, type PressableProps } from "react-native";
+import React from "react";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type PressableProps,
+} from "react-native";
 
 interface ChipProps extends Omit<PressableProps, "style"> {
   label: string;
   selected?: boolean;
   style?: import("react-native").StyleProp<import("react-native").ViewStyle>;
+  leftAccessory?: React.ReactNode;
 }
 
-export function Chip({ label, selected, style, ...props }: ChipProps) {
+export function Chip({
+  label,
+  selected,
+  style,
+  leftAccessory,
+  ...props
+}: ChipProps) {
   return (
     <Pressable
       style={({ pressed }) => [
@@ -17,9 +31,15 @@ export function Chip({ label, selected, style, ...props }: ChipProps) {
       ]}
       {...props}
     >
-      <Text style={[styles.text, selected && styles.textSelected]}>
-        {label}
-      </Text>
+      <View style={styles.content}>
+        {leftAccessory ? (
+          <View style={styles.leftAccessory}>{leftAccessory}</View>
+        ) : null}
+
+        <Text style={[styles.text, selected && styles.textSelected]}>
+          {label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -29,9 +49,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 20,
+    backgroundColor: "#f1f5f9",
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    backgroundColor: "#fff",
+    borderColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -41,6 +61,14 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
+  },
+  content: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  leftAccessory: {
+    marginRight: 8,
   },
   text: {
     fontSize: 14,

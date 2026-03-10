@@ -17,6 +17,9 @@ type AuthContextValue = {
   profile: Profile | null;
   isAuthReady: boolean;
   isProfileReady: boolean;
+  setProfile: (profile: Profile | null) => void;
+  refreshProfile: () => Promise<void>;
+  signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -26,7 +29,11 @@ async function loadOrCreateProfile(): Promise<Profile | null> {
   if (existing) {
     return existing;
   }
-  return createMyProfile();
+  return createMyProfile({
+    default_activity: "foot",
+    default_surface: "mixed",
+    default_route_type: "point_to_point",
+  });
 }
 
 export function AuthProvider({ children }: PropsWithChildren) {
@@ -100,6 +107,49 @@ export function AuthProvider({ children }: PropsWithChildren) {
     };
   }, []);
 
+  const refreshProfile = async () => {
+    const supabase = getSupabaseClient();
+    const {
+      data: { session: nextSession },
+    } = await supabase.auth.getSession();
+
+    setSession(nextSession);
+    setIsAuthReady(true);
+
+    const requestId = profileRequestIdRef.current + 1;
+    profileRequestIdRef.current = requestId;
+
+    if (!nextSession?.user) {
+      if (requestId === profileRequestIdRef.current) {
+        setProfile(null);
+        setIsProfileReady(true);
+      }
+      return;
+    }
+
+    setIsProfileReady(false);
+    try {
+      const nextProfile = await loadOrCreateProfile();
+      if (requestId === profileRequestIdRef.current) {
+        setProfile(nextProfile);
+      }
+    } finally {
+      if (requestId === profileRequestIdRef.current) {
+        setIsProfileReady(true);
+      }
+    }
+  };
+
+  const signOut = async () => {
+    const supabase = getSupabaseClient();
+    await supabase.auth.signOut();
+    profileRequestIdRef.current += 1;
+    setSession(null);
+    setProfile(null);
+    setIsAuthReady(true);
+    setIsProfileReady(true);
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -107,6 +157,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         profile,
         isAuthReady,
         isProfileReady,
+        setProfile,
+        refreshProfile,
+        signOut,
       }}
     >
       {children}
