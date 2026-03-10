@@ -165,9 +165,24 @@ export function HomeScreen({ navigation }: Props) {
   const [isSearchingDestination, setIsSearchingDestination] = useState(false);
 
   const isCircular = routeType === "circular";
+  const profileDefaultsSignature = profile
+    ? [
+        profile.id,
+        profile.updated_at,
+        profile.home_location_name ?? "",
+        profile.home_lat ?? "",
+        profile.home_lng ?? "",
+        profile.default_activity ?? "",
+        profile.default_surface ?? "",
+        profile.default_route_type ?? "",
+      ].join(":")
+    : null;
 
   useEffect(() => {
-    if (!profile?.id || appliedProfileDefaultsRef.current === profile.id) {
+    if (
+      !profile ||
+      appliedProfileDefaultsRef.current === profileDefaultsSignature
+    ) {
       return;
     }
 
@@ -200,8 +215,8 @@ export function HomeScreen({ navigation }: Props) {
       setActivity(profile.default_activity);
     }
 
-    appliedProfileDefaultsRef.current = profile.id;
-  }, [profile, start]);
+    appliedProfileDefaultsRef.current = profileDefaultsSignature;
+  }, [profile, profileDefaultsSignature, start]);
 
   useEffect(() => {
     if (activity === "road_cycling" && surface !== "Asphalt") {

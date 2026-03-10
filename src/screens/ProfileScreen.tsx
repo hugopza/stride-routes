@@ -70,6 +70,7 @@ export function ProfileScreen() {
   >([]);
   const hydratedProfileSignatureRef = useRef<string | null>(null);
   const homeLocationSearchRequestRef = useRef(0);
+  const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const applyProfileToForm = (nextProfile: Profile | null) => {
     setDisplayName(nextProfile?.display_name ?? "");
@@ -117,6 +118,14 @@ export function ProfileScreen() {
   }, [defaultActivity, defaultSurface]);
 
   useEffect(() => {
+    return () => {
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       const query = homeLocationName.trim();
@@ -154,6 +163,10 @@ export function ProfileScreen() {
     }
     if (successMessage) {
       setSuccessMessage(null);
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+        successTimeoutRef.current = null;
+      }
     }
     if (errorMessage) {
       setErrorMessage(null);
@@ -200,6 +213,13 @@ export function ProfileScreen() {
       setProfile(updatedProfile);
       setIsDirty(false);
       setSuccessMessage("Changes saved successfully.");
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+      }
+      successTimeoutRef.current = setTimeout(() => {
+        setSuccessMessage(null);
+        successTimeoutRef.current = null;
+      }, 2500);
     } catch (error) {
       setErrorMessage(
         error instanceof Error
@@ -301,9 +321,9 @@ export function ProfileScreen() {
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>Activity Type</Text>
           <View style={styles.goalRow}>
-            <Button
+            <Chip
               label="Foot"
-              variant={defaultActivity === "foot" ? "primary" : "outline"}
+              selected={defaultActivity === "foot"}
               onPress={() => {
                 markEdited();
                 setDefaultActivity("foot");
@@ -317,11 +337,9 @@ export function ProfileScreen() {
                 />
               }
             />
-            <Button
+            <Chip
               label="Road Cycling"
-              variant={
-                defaultActivity === "road_cycling" ? "primary" : "outline"
-              }
+              selected={defaultActivity === "road_cycling"}
               onPress={() => {
                 markEdited();
                 setDefaultActivity("road_cycling");
@@ -343,10 +361,18 @@ export function ProfileScreen() {
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>Default Surface</Text>
           {defaultActivity === "road_cycling" ? (
-            <View style={styles.lockedField}>
-              <Text style={styles.lockedFieldText}>
-                Asphalt only for road cycling.
-              </Text>
+            <View style={styles.chipRow}>
+              {(["Asphalt"] as const).map((label) => (
+                <Chip
+                  key={label}
+                  label={label}
+                  selected={toSurfaceLabel(defaultSurface) === label}
+                  onPress={() => {
+                    markEdited();
+                    setDefaultSurface(label.toLowerCase() as Surface);
+                  }}
+                />
+              ))}
             </View>
           ) : (
             <View style={styles.chipRow}>
@@ -368,20 +394,18 @@ export function ProfileScreen() {
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>Route Type</Text>
           <View style={styles.goalRow}>
-            <Button
+            <Chip
               label="Circular"
-              variant={defaultRouteType === "circular" ? "primary" : "outline"}
+              selected={defaultRouteType === "circular"}
               onPress={() => {
                 markEdited();
                 setDefaultRouteType("circular");
               }}
               style={{ flex: 1 }}
             />
-            <Button
+            <Chip
               label="Point to Point"
-              variant={
-                defaultRouteType === "point_to_point" ? "primary" : "outline"
-              }
+              selected={defaultRouteType === "point_to_point"}
               onPress={() => {
                 markEdited();
                 setDefaultRouteType("point_to_point");
