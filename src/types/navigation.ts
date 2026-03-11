@@ -1,5 +1,8 @@
 import type { CandidateRoute, RouteParams } from './route';
-import type { SavedRouteSurface } from "./saved-route";
+import type {
+  SavedRouteActivity,
+  SavedRouteSurface,
+} from "./saved-route";
 
 export type RootStackParamList = {
   Home: undefined;
@@ -9,6 +12,8 @@ export type RootStackParamList = {
   };
   RouteDetail: {
     route: CandidateRoute;
+    activity?: SavedRouteActivity;
     surface?: SavedRouteSurface;
+    timeLabel?: string;
   };
 };

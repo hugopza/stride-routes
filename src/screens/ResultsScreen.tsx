@@ -136,6 +136,7 @@ export function ResultsScreen({ navigation, route }: Props) {
       await saveRoute({
         customName,
         route: routeToSave,
+        activity: params.activity === "road_cycling" ? "road_cycling" : "foot",
         surface: normalizedSurface,
       });
       setRouteToSave(null);
@@ -178,9 +179,14 @@ export function ResultsScreen({ navigation, route }: Props) {
             onToggleSaved={() => void onToggleSaved(candidate, index)}
             isSaveLoading={savingRouteId === candidate.id}
             onPress={() => {
+              const timeLabel =
+                params.goalMode === "time" ? undefined : "N/A";
               navigation.navigate("RouteDetail", {
                 route: candidate,
+                activity:
+                  params.activity === "road_cycling" ? "road_cycling" : "foot",
                 surface: normalizedSurface,
+                timeLabel,
               });
             }}
             tags={

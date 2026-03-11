@@ -3,7 +3,6 @@ import { useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Button } from "../components/Button";
-import { Chip } from "../components/Chip";
 import { RouteMapPreview } from "../components/RouteMapPreview";
 import { SaveRouteModal } from "../components/SaveRouteModal";
 import { exportPolylineAsGpx } from "../lib/gpx";
@@ -13,8 +12,12 @@ import { useSavedRoutes } from "../providers/SavedRoutesProvider";
 type Props = NativeStackScreenProps<RoutesStackParamList, "RouteDetail">;
 
 export function RouteDetailScreen({ navigation, route }: Props) {
-  const { route: selectedRoute, surface } = route.params;
-  const [feedback, setFeedback] = useState<string[]>([]);
+  const {
+    route: selectedRoute,
+    activity,
+    surface,
+    timeLabel,
+  } = route.params;
   const [isExporting, setIsExporting] = useState(false);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -25,19 +28,16 @@ export function RouteDetailScreen({ navigation, route }: Props) {
       Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
   );
 
-  const toggleFeedback = (f: string) => {
-    if (feedback.includes(f)) {
-      setFeedback(feedback.filter((item) => item !== f));
-    } else {
-      setFeedback([...feedback, f]);
-    }
-  };
-
   const elevationLabel =
     typeof selectedRoute.elevationGainM === "number" &&
     Number.isFinite(selectedRoute.elevationGainM)
       ? `${selectedRoute.elevationGainM} m`
       : "N/A";
+  const resolvedTimeLabel =
+    timeLabel ??
+    (Math.floor(selectedRoute.estimatedDurationMinutes / 60) > 0
+      ? `${Math.floor(selectedRoute.estimatedDurationMinutes / 60)}h `
+      : "") + `${Math.round(selectedRoute.estimatedDurationMinutes % 60)}m`;
   const savedRoute = getSavedRouteForCandidate(selectedRoute);
 
   const onExportGpx = async () => {
@@ -86,6 +86,7 @@ export function RouteDetailScreen({ navigation, route }: Props) {
       await saveRoute({
         customName,
         route: selectedRoute,
+        activity: activity ?? null,
         surface: surface ?? null,
       });
       setShowSaveModal(false);
@@ -119,12 +120,7 @@ export function RouteDetailScreen({ navigation, route }: Props) {
             <View style={styles.statDivider} />
             <View style={styles.statCol}>
               <Text style={styles.statLabel}>TIME</Text>
-              <Text style={styles.statValue}>
-                {Math.floor(selectedRoute.estimatedDurationMinutes / 60) > 0
-                  ? `${Math.floor(selectedRoute.estimatedDurationMinutes / 60)}h `
-                  : ""}
-                {Math.round(selectedRoute.estimatedDurationMinutes % 60)}m
-              </Text>
+              <Text style={styles.statValue}>{resolvedTimeLabel}</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statCol}>
@@ -151,29 +147,6 @@ export function RouteDetailScreen({ navigation, route }: Props) {
             loading={isSavingRoute}
           />
         </View>
-
-        <Text style={styles.feedbackTitle}>FEEDBACK AFTER RUN</Text>
-
-        <View style={styles.feedbackChips}>
-          {["Too hilly", "Too much traffic", "Too long/short", "Loved it"].map(
-            (f) => (
-              <Chip
-                key={f}
-                label={f}
-                selected={feedback.includes(f)}
-                onPress={() => toggleFeedback(f)}
-                style={styles.feedbackChip}
-              />
-            ),
-          )}
-        </View>
-
-        <Button
-          label="Submit feedback"
-          variant="outline"
-          style={{ backgroundColor: "#f3f4f6", borderColor: "#e5e7eb" }}
-          onPress={() => Alert.alert("Feedback", "Submitted.")}
-        />
         <SaveRouteModal
           visible={showSaveModal}
           initialValue={selectedRoute.name}
@@ -247,22 +220,5 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     marginBottom: 24,
-  },
-  feedbackTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#0f172a",
-    marginBottom: 12,
-  },
-  feedbackChips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 16,
-  },
-  feedbackChip: {
-    backgroundColor: "#f8fafc",
-    borderColor: "#e2e8f0",
-    borderRadius: 20,
   },
 });

@@ -17,6 +17,7 @@ import {
 import type { CandidateRoute } from "../types/route";
 import type {
   CreateSavedRouteInput,
+  SavedRouteActivity,
   SavedRoute,
   SavedRouteSurface,
 } from "../types/saved-route";
@@ -25,6 +26,7 @@ import { useAuth } from "./AuthProvider";
 type SaveRouteInput = {
   customName: string;
   route: CandidateRoute;
+  activity?: SavedRouteActivity;
   surface?: SavedRouteSurface;
 };
 

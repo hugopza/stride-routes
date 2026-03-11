@@ -3,6 +3,7 @@ import { getSupabaseClient } from "../lib/supabase";
 import type { RouteCoordinate } from "../types/route";
 import type {
   CreateSavedRouteInput,
+  SavedRouteActivity,
   SavedRoute,
   SavedRouteSurface,
 } from "../types/saved-route";
@@ -13,6 +14,7 @@ type SavedRouteRow = {
   custom_name: string;
   route_fingerprint: string;
   route_provider: "real" | null;
+  activity: SavedRouteActivity | string | undefined;
   surface: SavedRouteSurface;
   distance_km: number;
   estimated_duration_minutes: number;
@@ -21,6 +23,62 @@ type SavedRouteRow = {
   created_at: string;
   updated_at: string;
 };
+
+function inferSavedRouteActivity(row: SavedRouteRow): SavedRouteActivity {
+  if (row.surface === "trail" || row.surface === "mixed") {
+    return "foot";
+  }
+
+  const durationHours = row.estimated_duration_minutes / 60;
+  const averageSpeedKmh =
+    durationHours > 0 ? row.distance_km / durationHours : 0;
+
+  return averageSpeedKmh >= 15 ? "road_cycling" : "foot";
+}
+
+function normalizeSavedRouteActivity(row: SavedRouteRow): SavedRouteActivity {
+  const value = typeof row.activity === "string" ? row.activity.trim() : row.activity;
+
+  if (value === "road_cycling") {
+    return "road_cycling";
+  }
+
+  if (value === "foot" || value === "running" || value === "walking") {
+    return "foot";
+  }
+
+  return inferSavedRouteActivity(row);
+}
+
+function normalizeSavedRouteActivityInput(
+  activity: CreateSavedRouteInput["activity"],
+  surface: SavedRouteSurface | undefined,
+  route: CreateSavedRouteInput["route"],
+): SavedRouteActivity {
+  if (activity === "road_cycling") {
+    return "road_cycling";
+  }
+
+  if (activity === "foot") {
+    return "foot";
+  }
+
+  return inferSavedRouteActivity({
+    id: "",
+    user_id: "",
+    custom_name: "",
+    route_fingerprint: "",
+    route_provider: route.provider ?? null,
+    activity: undefined,
+    surface: surface ?? null,
+    distance_km: route.distanceKm,
+    estimated_duration_minutes: route.estimatedDurationMinutes,
+    elevation_gain_m: route.elevationGainM,
+    polyline: route.polyline,
+    created_at: "",
+    updated_at: "",
+  });
+}
 
 async function requireAuthenticatedUserId(): Promise<string> {
   const supabase = getSupabaseClient();
@@ -41,12 +99,15 @@ async function requireAuthenticatedUserId(): Promise<string> {
 }
 
 function mapSavedRouteRow(row: SavedRouteRow): SavedRoute {
+  const activity = normalizeSavedRouteActivity(row);
+
   return {
     id: row.id,
     user_id: row.user_id,
     custom_name: row.custom_name,
     route_fingerprint: row.route_fingerprint,
     route_provider: row.route_provider,
+    activity,
     surface: row.surface,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -94,6 +155,11 @@ export async function createSavedRoute(
     custom_name: customName,
     route_fingerprint: getRouteFingerprint(input.route),
     route_provider: input.route.provider ?? null,
+    activity: normalizeSavedRouteActivityInput(
+      input.activity,
+      input.surface,
+      input.route,
+    ),
     surface: input.surface ?? null,
     distance_km: input.route.distanceKm,
     estimated_duration_minutes: input.route.estimatedDurationMinutes,

@@ -40,6 +40,7 @@ type OrsExtraInfo = {
 };
 
 type SurfacePreference = "asphalt" | "mixed" | "trail";
+type RouteActivity = "foot" | "road_cycling";
 
 type SegmentClass = "asphalt" | "trail" | "both" | "ignored";
 
@@ -162,6 +163,10 @@ const MAX_IGNORED_RATIO = 0.35;
 const ASPHALT_GATE_RATIO = 0.8;
 const TRAIL_GATE_RATIO = 0.65;
 
+function normalizeActivity(activity: RouteParams["activity"]): RouteActivity {
+  return activity === "road_cycling" ? "road_cycling" : "foot";
+}
+
 export class NoSurfaceMatchError extends Error {
   constructor(surface: SurfacePreference) {
     super(`No routes match the selected surface requirement (${surface}).`);
@@ -258,8 +263,15 @@ function clamp01(value: number): number {
 }
 
 export class OpenRouteServiceProvider implements RouteProvider {
-  private readonly endpoint =
-    "https://api.openrouteservice.org/v2/directions/foot-walking/geojson";
+  private getEndpoint(activity: RouteActivity): string {
+    const profile =
+      activity === "road_cycling" ? "cycling-road" : "foot-walking";
+    return `https://api.openrouteservice.org/v2/directions/${profile}/geojson`;
+  }
+
+  private getOrsProfile(activity: RouteActivity): "foot-walking" | "cycling-road" {
+    return activity === "road_cycling" ? "cycling-road" : "foot-walking";
+  }
 
   private debugLog(message: string, payload?: unknown): void {
     if (!env.routingDebug) {
@@ -658,11 +670,18 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private surfacePreferencePenalty(
     profile: SurfaceProfile,
     preference: SurfacePreference,
+    activity: RouteActivity,
   ): number {
     if (preference === "mixed") {
       return 0;
     }
     if (preference === "asphalt") {
+      if (activity === "road_cycling") {
+        return Math.max(
+          0,
+          (1 - profile.asphaltRatio) * 0.8 + profile.trailRatio * 0.6,
+        );
+      }
       return 1 - profile.asphaltRatio;
     }
     return 1 - profile.trailRatio;
@@ -671,17 +690,31 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private passesSurfaceGate(
     profile: SurfaceProfile,
     preference: SurfacePreference,
+    activity: RouteActivity,
+    targetDistanceKm: number,
   ): boolean {
     if (profile.countedDistance <= 0) {
       return false;
     }
-    if (profile.ignoredRatio > MAX_IGNORED_RATIO) {
+    const maxIgnoredRatio =
+      activity === "road_cycling" ? 0.42 : MAX_IGNORED_RATIO;
+    if (profile.ignoredRatio > maxIgnoredRatio) {
       return false;
     }
     if (preference === "mixed") {
       return true;
     }
     if (preference === "asphalt") {
+      if (activity === "road_cycling") {
+        const minAsphaltRatio =
+          targetDistanceKm >= 70 ? 0.56 : targetDistanceKm >= 40 ? 0.6 : 0.66;
+        const maxTrailRatio =
+          targetDistanceKm >= 70 ? 0.28 : targetDistanceKm >= 40 ? 0.24 : 0.2;
+        return (
+          profile.asphaltRatio >= minAsphaltRatio &&
+          profile.trailRatio <= maxTrailRatio
+        );
+      }
       return profile.asphaltRatio >= ASPHALT_GATE_RATIO;
     }
     return profile.trailRatio >= TRAIL_GATE_RATIO;
@@ -690,10 +723,17 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private applySurfaceGate(
     candidates: MappedRoute[],
     preference: SurfacePreference,
+    activity: RouteActivity,
+    targetDistanceKm: number,
     context: string,
   ): MappedRoute[] {
     const inspected = candidates.map((candidate) => {
-      const passed = this.passesSurfaceGate(candidate.surfaceProfile, preference);
+      const passed = this.passesSurfaceGate(
+        candidate.surfaceProfile,
+        preference,
+        activity,
+        targetDistanceKm,
+      );
       return {
         candidate,
         passed,
@@ -702,6 +742,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     this.debugLog("[ors] surface-gate", {
       mode: preference,
+      activity,
       context,
       candidates: inspected.map((item) => ({
         id: item.candidate.route.id,
@@ -735,11 +776,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     end: RouteCoordinate,
     allowAlternatives: boolean,
+    activity: RouteActivity,
   ): Promise<OrsResponse> {
     return this.requestDirectionsWithCoordinates(
       [start, end],
       allowAlternatives,
       "directed",
+      activity,
     );
   }
 
@@ -747,9 +790,11 @@ export class OpenRouteServiceProvider implements RouteProvider {
     coordinates: RouteCoordinate[],
     allowAlternatives: boolean,
     context: string,
+    activity: RouteActivity,
   ): Promise<OrsResponse> {
+    const profile = this.getOrsProfile(activity);
     this.debugLog("[ors] request", {
-      profile: "foot-walking",
+      profile,
       context,
       coordinates,
       coordOrder: "[lon, lat]",
@@ -757,7 +802,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       elevation: true,
     });
 
-    const response = await fetch(this.endpoint, {
+    const response = await fetch(this.getEndpoint(activity), {
       method: "POST",
       headers: {
         Authorization: env.openRouteServiceApiKey,
@@ -767,6 +812,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
         coordinates: coordinates.map((point) => [point.longitude, point.latitude]),
         elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
+        ...(activity === "road_cycling"
+          ? {
+              options: {
+                avoid_features: ["ferries", "steps"],
+              },
+            }
+          : {}),
         ...(allowAlternatives
           ? {
               alternative_routes: {
@@ -1007,7 +1059,19 @@ export class OpenRouteServiceProvider implements RouteProvider {
     );
   }
 
-  private getRoundTripPointOptions(targetDistanceKm: number): [number, number] {
+  private getRoundTripPointOptions(
+    targetDistanceKm: number,
+    activity: RouteActivity,
+  ): [number, number] {
+    if (activity === "road_cycling") {
+      if (targetDistanceKm <= 30) {
+        return [4, 5];
+      }
+      if (targetDistanceKm <= 60) {
+        return [5, 6];
+      }
+      return [6, 7];
+    }
     if (targetDistanceKm <= 8) {
       return [3, 4];
     }
@@ -1020,22 +1084,37 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private clampRoundTripLengthMeters(
     requestedLengthMeters: number,
     targetDistanceKm: number,
+    activity: RouteActivity,
   ): number {
-    const minMeters = Math.max(600, Math.round(targetDistanceKm * 550));
-    const maxMeters = Math.max(minMeters + 400, Math.round(targetDistanceKm * 1450));
+    const minMeters =
+      activity === "road_cycling"
+        ? Math.max(1000, Math.round(targetDistanceKm * 700))
+        : Math.max(600, Math.round(targetDistanceKm * 550));
+    const maxMeters =
+      activity === "road_cycling"
+        ? Math.max(minMeters + 1000, Math.round(targetDistanceKm * 1600))
+        : Math.max(minMeters + 400, Math.round(targetDistanceKm * 1450));
     return Math.round(Math.max(minMeters, Math.min(maxMeters, requestedLengthMeters)));
   }
 
   private buildRoundTripCandidates(
     targetDistanceKm: number,
     nonce: number,
+    activity: RouteActivity,
   ): RoundTripCandidate[] {
-    const [minPoints, maxPoints] = this.getRoundTripPointOptions(targetDistanceKm);
+    const [minPoints, maxPoints] = this.getRoundTripPointOptions(
+      targetDistanceKm,
+      activity,
+    );
     const targetLengthMeters = this.clampRoundTripLengthMeters(
       Math.round(targetDistanceKm * 1000),
       targetDistanceKm,
+      activity,
     );
-    const seeds = [11, 23, 37, 53, 71, 89];
+    const seeds =
+      activity === "road_cycling" && targetDistanceKm > 50
+        ? [11, 23, 37, 53, 71, 89, 107, 131]
+        : [11, 23, 37, 53, 71, 89];
     const seedOffset = Math.abs(Math.trunc(nonce)) % 100000;
 
     return seeds.map((seed, index) => ({
@@ -1049,6 +1128,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private buildRoundTripRefinementCandidates(
     targetDistanceKm: number,
     candidates: EvaluatedCandidate[],
+    activity: RouteActivity,
   ): RoundTripCandidate[] {
     const refined: RoundTripCandidate[] = [];
 
@@ -1065,6 +1145,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
         targetLengthMeters: this.clampRoundTripLengthMeters(
           correctedLength,
           targetDistanceKm,
+          activity,
         ),
         phase: "refined",
       });
@@ -1076,9 +1157,12 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private async requestCircularRoundTrip(
     start: RouteCoordinate,
     candidate: RoundTripCandidate,
+    activity: RouteActivity,
   ): Promise<OrsResponse> {
+    const profile = this.getOrsProfile(activity);
     this.debugLog("[ors] request-round-trip", {
       start,
+      profile,
       seed: candidate.seed,
       points: candidate.points,
       targetLengthMeters: candidate.targetLengthMeters,
@@ -1087,7 +1171,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       elevation: true,
     });
 
-    const response = await fetch(this.endpoint, {
+    const response = await fetch(this.getEndpoint(activity), {
       method: "POST",
       headers: {
         Authorization: env.openRouteServiceApiKey,
@@ -1101,6 +1185,9 @@ export class OpenRouteServiceProvider implements RouteProvider {
             points: candidate.points,
             seed: candidate.seed,
           },
+          ...(activity === "road_cycling"
+            ? { avoid_features: ["ferries", "steps"] }
+            : {}),
         },
         elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
@@ -1214,6 +1301,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     profile: SurfaceProfile,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
   ): { hard: number; preference: number; total: number } {
     const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
     const normalizedDistanceError =
@@ -1223,7 +1311,8 @@ export class OpenRouteServiceProvider implements RouteProvider {
       diffKm > outlierToleranceKm
         ? ((diffKm - outlierToleranceKm) / Math.max(0.5, outlierToleranceKm)) * 4.5
         : 0;
-    const majorRoadPenalty = profile.majorRoadRatio * 5.2;
+    const majorRoadPenalty =
+      profile.majorRoadRatio * (activity === "road_cycling" ? 2.4 : 5.2);
     const geometryPenalty = route.polyline.length >= 20 ? 0 : 0.35;
     const hard =
       normalizedDistanceError * 4 +
@@ -1231,7 +1320,11 @@ export class OpenRouteServiceProvider implements RouteProvider {
       outlierPenalty +
       majorRoadPenalty +
       geometryPenalty;
-    const preference = this.surfacePreferencePenalty(profile, surfacePreference);
+    const preference = this.surfacePreferencePenalty(
+      profile,
+      surfacePreference,
+      activity,
+    );
     return { hard, preference, total: hard + preference * 0.22 };
   }
 
@@ -1240,18 +1333,24 @@ export class OpenRouteServiceProvider implements RouteProvider {
     profile: SurfaceProfile,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
   ): { hard: number; preference: number; total: number } {
     const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
     const normalizedDistanceError =
       diffKm / Math.max(0.5, targetDistanceKm);
-    const majorRoadPenalty = profile.majorRoadRatio * 6.8;
+    const majorRoadPenalty =
+      profile.majorRoadRatio * (activity === "road_cycling" ? 2.8 : 6.8);
     const geometryPenalty = route.polyline.length >= 20 ? 0 : 0.35;
     const hard =
       majorRoadPenalty +
       normalizedDistanceError * 1.4 +
       diffKm * 0.18 +
       geometryPenalty;
-    const preference = this.surfacePreferencePenalty(profile, surfacePreference);
+    const preference = this.surfacePreferencePenalty(
+      profile,
+      surfacePreference,
+      activity,
+    );
     return { hard, preference, total: hard + preference * 0.18 };
   }
 
@@ -1284,6 +1383,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
   ): { hard: number; preference: number; total: number } {
     const diffKm = Math.abs(route.distanceKm - targetDistanceKm);
     const normalizedDistanceError =
@@ -1304,7 +1404,8 @@ export class OpenRouteServiceProvider implements RouteProvider {
       diffKm > toleranceKm
         ? ((diffKm - toleranceKm) / Math.max(0.5, toleranceKm)) * 4
         : 0;
-    const majorRoadPenalty = profile.majorRoadRatio * 4.6;
+    const majorRoadPenalty =
+      profile.majorRoadRatio * (activity === "road_cycling" ? 1.9 : 4.6);
     const hard =
       normalizedDistanceError * 4.2 +
       diffKm * 0.65 +
@@ -1313,7 +1414,11 @@ export class OpenRouteServiceProvider implements RouteProvider {
       closurePenalty * 0.9 +
       loopShapePenalty * 0.8 +
       geometryPenalty;
-    const preference = this.surfacePreferencePenalty(profile, surfacePreference);
+    const preference = this.surfacePreferencePenalty(
+      profile,
+      surfacePreference,
+      activity,
+    );
     return { hard, preference, total: hard + preference * 0.24 };
   }
 
@@ -1449,14 +1554,27 @@ export class OpenRouteServiceProvider implements RouteProvider {
     profile: SurfaceProfile,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
     start?: RouteCoordinate,
   ): { hard: number; preference: number; total: number } {
     if (mode === "directed") {
-      return this.scoreDirected(route, profile, targetDistanceKm, surfacePreference);
+      return this.scoreDirected(
+        route,
+        profile,
+        targetDistanceKm,
+        surfacePreference,
+        activity,
+      );
     }
     if (mode === "start-only-circular") {
       if (!start) {
-        return this.scoreDirected(route, profile, targetDistanceKm, surfacePreference);
+        return this.scoreDirected(
+          route,
+          profile,
+          targetDistanceKm,
+          surfacePreference,
+          activity,
+        );
       }
       return this.scoreCircularCandidate(
         route,
@@ -1464,6 +1582,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
         start,
         targetDistanceKm,
         surfacePreference,
+        activity,
       );
     }
     return this.scoreStartOnlyNonCircular(
@@ -1471,6 +1590,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       profile,
       targetDistanceKm,
       surfacePreference,
+      activity,
     );
   }
 
@@ -1589,6 +1709,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
     candidates: RoundTripCandidate[],
   ): Promise<RoundTripEvaluationBatch> {
     const results: EvaluatedCandidate[] = [];
@@ -1597,7 +1718,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     for (const candidate of candidates) {
       try {
-        const data = await this.requestCircularRoundTrip(start, candidate);
+        const data = await this.requestCircularRoundTrip(start, candidate, activity);
         const features = data.features ?? [];
         const featuresWithRequiredExtras = features.filter((feature) =>
           this.hasRequiredExtrasForSurfaceModel(feature),
@@ -1627,6 +1748,8 @@ export class OpenRouteServiceProvider implements RouteProvider {
         const gated = this.applySurfaceGate(
           mapped,
           surfacePreference,
+          activity,
+          targetDistanceKm,
           `round-trip-${candidate.seed}`,
         );
 
@@ -1638,6 +1761,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
               item.surfaceProfile,
               targetDistanceKm,
               surfacePreference,
+              activity,
               start,
             );
             return {
@@ -1655,6 +1779,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             best.surfaceProfile,
             targetDistanceKm,
             surfacePreference,
+            activity,
             start,
           );
           results.push({
@@ -1729,13 +1854,17 @@ export class OpenRouteServiceProvider implements RouteProvider {
     start: RouteCoordinate,
     targetDistanceKm: number,
     nonce: number,
+    activity: RouteActivity,
   ): WaypointFallbackCandidate[] {
     const rng = this.createNonceRng(
       `fallback-${nonce}-${start.latitude.toFixed(5)}-${start.longitude.toFixed(
         5,
       )}-${targetDistanceKm.toFixed(2)}`,
     );
-    const baseRadiusKm = Math.max(0.25, Math.min(7.5, targetDistanceKm / 3.6));
+    const baseRadiusKm =
+      activity === "road_cycling"
+        ? Math.max(2.5, Math.min(34, targetDistanceKm / 3.2))
+        : Math.max(0.25, Math.min(7.5, targetDistanceKm / 3.6));
     const globalRotationDeg = rng() * 360;
     const plans: Array<{ pattern: WaypointPattern; bearingDeg: number; scale: number }> = [
       { pattern: "triangle", bearingDeg: 0, scale: 0.92 },
@@ -1781,10 +1910,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
   private async requestCircularWaypointLoop(
     start: RouteCoordinate,
     candidate: WaypointFallbackCandidate,
+    activity: RouteActivity,
   ): Promise<OrsResponse> {
+    const profile = this.getOrsProfile(activity);
     this.debugLog("[ors] request-circular-fallback", {
       pattern: candidate.pattern,
       variant: candidate.variant,
+      profile,
       waypoints: candidate.waypoints.length,
       baseBearingDeg: Number(candidate.baseBearingDeg.toFixed(1)),
       radiusKm: Number(candidate.radiusKm.toFixed(2)),
@@ -1792,7 +1924,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       elevation: true,
     });
 
-    const response = await fetch(this.endpoint, {
+    const response = await fetch(this.getEndpoint(activity), {
       method: "POST",
       headers: {
         Authorization: env.openRouteServiceApiKey,
@@ -1804,6 +1936,13 @@ export class OpenRouteServiceProvider implements RouteProvider {
           ...candidate.waypoints.map((point) => [point.longitude, point.latitude]),
           [start.longitude, start.latitude],
         ],
+        ...(activity === "road_cycling"
+          ? {
+              options: {
+                avoid_features: ["ferries", "steps"],
+              },
+            }
+          : {}),
         elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
       }),
@@ -1841,6 +1980,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
     candidates: WaypointFallbackCandidate[],
   ): Promise<EvaluationBatch> {
     const results: EvaluatedCandidate[] = [];
@@ -1848,12 +1988,18 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     for (const candidate of candidates) {
       try {
-        const data = await this.requestCircularWaypointLoop(start, candidate);
+        const data = await this.requestCircularWaypointLoop(
+          start,
+          candidate,
+          activity,
+        );
         const mapped = this.mapFeaturesToRoutes(data, pace);
         mappedCandidates += mapped.length;
         const gated = this.applySurfaceGate(
           mapped,
           surfacePreference,
+          activity,
+          targetDistanceKm,
           `waypoint-fallback-${candidate.pattern}-${candidate.variant}`,
         );
         if (gated.length > 0) {
@@ -1864,6 +2010,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
               item.surfaceProfile,
               targetDistanceKm,
               surfacePreference,
+              activity,
               start,
             );
             return {
@@ -1881,6 +2028,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             best.surfaceProfile,
             targetDistanceKm,
             surfacePreference,
+            activity,
             start,
           );
           results.push({
@@ -1913,6 +2061,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
     candidates: EndpointCandidate[],
   ): Promise<EvaluationBatch> {
     const results: EvaluatedCandidate[] = [];
@@ -1920,12 +2069,19 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
     for (const candidate of candidates) {
       try {
-        const data = await this.requestDirections(start, candidate.endpoint, false);
+        const data = await this.requestDirections(
+          start,
+          candidate.endpoint,
+          false,
+          activity,
+        );
         const mapped = this.mapFeaturesToRoutes(data, pace);
         mappedCandidates += mapped.length;
         const gated = this.applySurfaceGate(
           mapped,
           surfacePreference,
+          activity,
+          targetDistanceKm,
           `start-only-noncircular-${candidate.bearingDeg}`,
         );
         if (gated.length > 0) {
@@ -1936,6 +2092,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
               item.surfaceProfile,
               targetDistanceKm,
               surfacePreference,
+              activity,
             );
             return {
               ...item,
@@ -1952,6 +2109,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             best.surfaceProfile,
             targetDistanceKm,
             surfacePreference,
+            activity,
           );
           results.push({
             route: best.route,
@@ -1981,6 +2139,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     targetDistanceKm: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
     mode: "directed" | "start-only-circular",
     start: RouteCoordinate,
   ): Promise<EvaluationBatch> {
@@ -1993,12 +2152,15 @@ export class OpenRouteServiceProvider implements RouteProvider {
           candidate.coordinates,
           false,
           `waypoint-constrained-${candidate.variant}`,
+          activity,
         );
         const mapped = this.mapFeaturesToRoutes(data, pace);
         mappedCandidates += mapped.length;
         const gated = this.applySurfaceGate(
           mapped,
           surfacePreference,
+          activity,
+          targetDistanceKm,
           `waypoint-constrained-${candidate.variant}`,
         );
 
@@ -2010,6 +2172,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
               item.surfaceProfile,
               targetDistanceKm,
               surfacePreference,
+              activity,
               mode === "start-only-circular" ? start : undefined,
             );
             return {
@@ -2028,6 +2191,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             best.surfaceProfile,
             targetDistanceKm,
             surfacePreference,
+            activity,
             mode === "start-only-circular" ? start : undefined,
           );
 
@@ -2101,6 +2265,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     targetDistanceKm: number,
     pace: number,
     surfacePreference: SurfacePreference,
+    activity: RouteActivity,
   ): Promise<GeneratedBatch> {
     const initialCandidates = this.generateCandidateEndpoints(start, targetDistanceKm);
     const initialEvaluation = await this.evaluateCandidates(
@@ -2108,6 +2273,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       pace,
       targetDistanceKm,
       surfacePreference,
+      activity,
       initialCandidates,
     );
     const topInitial = [...initialEvaluation.results]
@@ -2126,6 +2292,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       pace,
       targetDistanceKm,
       surfacePreference,
+      activity,
       refinementCandidates,
     );
 
@@ -2160,17 +2327,20 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     surfacePreference: SurfacePreference,
     nonce: number,
+    activity: RouteActivity,
   ): Promise<GeneratedBatch> {
     const candidates = this.generateWaypointFallbackCandidates(
       start,
       targetDistanceKm,
       nonce,
+      activity,
     );
     const evaluation = await this.evaluateWaypointFallbackCandidates(
       start,
       pace,
       targetDistanceKm,
       surfacePreference,
+      activity,
       candidates,
     );
     const guarded = this.applyCircularDistanceGuard(
@@ -2201,16 +2371,19 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     surfacePreference: SurfacePreference,
     nonce: number,
+    activity: RouteActivity,
   ): Promise<RoundTripGeneratedBatch> {
     const initialCandidates = this.buildRoundTripCandidates(
       targetDistanceKm,
       nonce,
+      activity,
     );
     const initialEvaluation = await this.evaluateCircularRoundTripCandidates(
       start,
       pace,
       targetDistanceKm,
       surfacePreference,
+      activity,
       initialCandidates,
     );
     const topByDistance = [...initialEvaluation.results]
@@ -2223,6 +2396,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     const refinementCandidates = this.buildRoundTripRefinementCandidates(
       targetDistanceKm,
       topByDistance,
+      activity,
     );
     const refinementEvaluation =
       refinementCandidates.length > 0
@@ -2231,6 +2405,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             pace,
             targetDistanceKm,
             surfacePreference,
+            activity,
             refinementCandidates,
           )
         : { results: [], mappedCandidates: 0, seedsWithMissingExtras: 0 };
@@ -2260,7 +2435,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       attemptedSeeds: initialCandidates.length + refinementCandidates.length,
       initialAttemptedSeeds: initialCandidates.length,
       refinementAttemptedSeeds: refinementCandidates.length,
-      pointOptions: this.getRoundTripPointOptions(targetDistanceKm),
+      pointOptions: this.getRoundTripPointOptions(targetDistanceKm, activity),
       targetLengthMeters: initialCandidates[0]?.targetLengthMeters ?? 0,
       usableAfterSurface: combined.length,
       usableAfterDistance: guarded.length,
@@ -2292,6 +2467,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     pace: number,
     surfacePreference: SurfacePreference,
     nonce: number,
+    activity: RouteActivity,
   ): Promise<GeneratedBatch> {
     const roundTrip = await this.generateCircularFromRoundTrip(
       start,
@@ -2299,6 +2475,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       pace,
       surfacePreference,
       nonce,
+      activity,
     );
 
     if (roundTrip.routes.length > 0) {
@@ -2323,6 +2500,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
       pace,
       surfacePreference,
       nonce,
+      activity,
     );
 
     return {
@@ -2339,6 +2517,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
     if (!params.startCoordinate) {
       throw new Error("Missing start coordinate for ORS request.");
     }
+    const activity = normalizeActivity(params.activity);
     const surfacePreference = normalizeSurfacePreference(params.surface);
     const pace = params.paceMinPerKm && params.paceMinPerKm > 0 ? params.paceMinPerKm : 6;
     const waypointCoordinates = this.getWaypointConstrainedCoordinates(params);
@@ -2355,6 +2534,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
         pace,
         params.targetDistanceKm,
         surfacePreference,
+        activity,
         params.circular ? "start-only-circular" : "directed",
         params.startCoordinate,
       );
@@ -2387,12 +2567,15 @@ export class OpenRouteServiceProvider implements RouteProvider {
           params.startCoordinate,
           params.endCoordinate,
           true,
+          activity,
         ),
         pace,
       );
       const gated = this.applySurfaceGate(
         rawMapped,
         surfacePreference,
+        activity,
+        params.targetDistanceKm,
         "directed",
       );
 
@@ -2408,6 +2591,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
             item.surfaceProfile,
             params.targetDistanceKm,
             surfacePreference,
+            activity,
           );
           return {
             ...item,
@@ -2448,12 +2632,14 @@ export class OpenRouteServiceProvider implements RouteProvider {
           pace,
           surfacePreference,
           generationNonce,
+          activity,
         )
       : await this.generateFromStartOnly(
           params.startCoordinate,
           params.targetDistanceKm,
           pace,
           surfacePreference,
+          activity,
         );
 
     if (generated.routes.length === 0 && generated.mappedCandidates > 0) {

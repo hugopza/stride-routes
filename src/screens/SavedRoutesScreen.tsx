@@ -8,16 +8,28 @@ import { Chip } from "../components/Chip";
 import { RouteCard } from "../components/RouteCard";
 import type { RootTabParamList } from "../navigation/types";
 import { useSavedRoutes } from "../providers/SavedRoutesProvider";
-import type { SavedRoute } from "../types/saved-route";
+import type { SavedRoute, SavedRouteActivity } from "../types/saved-route";
 
-const FILTERS = ["All", "Trail", "Asphalt", "Mixed"] as const;
+const ACTIVITY_FILTERS = ["All", "Foot", "Bike"] as const;
+
+function getActivityLabel(activity: SavedRouteActivity): string {
+  if (activity === "road_cycling") {
+    return "Bike";
+  }
+  return "Foot";
+}
 
 function toLocationLabel(route: SavedRoute): string | undefined {
-  if (!route.surface) {
-    return undefined;
+  if (route.activity === "road_cycling") {
+    return "Road cycling route";
   }
-
-  return `${route.surface.charAt(0).toUpperCase()}${route.surface.slice(1)} route`;
+  if (route.activity === "foot" && route.surface) {
+    return `${route.surface.charAt(0).toUpperCase()}${route.surface.slice(1)} foot route`;
+  }
+  if (route.activity === "foot") {
+    return "Foot route";
+  }
+  return undefined;
 }
 
 export function SavedRoutesScreen() {
@@ -30,9 +42,9 @@ export function SavedRoutesScreen() {
     removeSavedRoute,
   } = useSavedRoutes();
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedFilter, setSelectedFilter] = useState<(typeof FILTERS)[number]>(
-    "All",
-  );
+  const [selectedFilter, setSelectedFilter] = useState<
+    (typeof ACTIVITY_FILTERS)[number]
+  >("All");
   const [removingRouteId, setRemovingRouteId] = useState<string | null>(null);
 
   useFocusEffect(
@@ -49,7 +61,9 @@ export function SavedRoutesScreen() {
         !query || route.custom_name.toLowerCase().includes(query);
       const matchesFilter =
         selectedFilter === "All" ||
-        route.surface?.toLowerCase() === selectedFilter.toLowerCase();
+        (selectedFilter === "Bike"
+          ? route.activity === "road_cycling"
+          : route.activity === "foot");
 
       return matchesSearch && matchesFilter;
     });
@@ -63,6 +77,9 @@ export function SavedRoutesScreen() {
       setRemovingRouteId(null);
     }
   };
+
+  const hasSearch = searchQuery.trim().length > 0;
+  const hasActiveFilter = selectedFilter !== "All";
 
   return (
     <View style={styles.container}>
@@ -82,13 +99,21 @@ export function SavedRoutesScreen() {
           />
         </View>
 
+        <View style={styles.filterHeader}>
+          <Text style={styles.filterTitle}>Activity</Text>
+          {hasActiveFilter ? (
+            <Text style={styles.filterSummary}>{selectedFilter} routes</Text>
+          ) : (
+            <Text style={styles.filterSummary}>All saved routes</Text>
+          )}
+        </View>
         <View style={styles.filtersWrapper}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.filtersContainer}
           >
-            {FILTERS.map((filter) => (
+            {ACTIVITY_FILTERS.map((filter) => (
               <Chip
                 key={filter}
                 label={filter}
@@ -118,9 +143,15 @@ export function SavedRoutesScreen() {
           ) : filteredRoutes.length === 0 ? (
             <View style={styles.stateCard}>
               <Ionicons name="bookmark-outline" size={24} color="#9ca3af" />
-              <Text style={styles.stateTitle}>No saved routes yet</Text>
+              <Text style={styles.stateTitle}>
+                {hasSearch || hasActiveFilter
+                  ? "No routes match these filters"
+                  : "No saved routes yet"}
+              </Text>
               <Text style={styles.stateText}>
-                Save a generated route to see it here.
+                {hasSearch || hasActiveFilter
+                  ? "Try a different activity filter or search term."
+                  : "Save a generated route to see it here."}
               </Text>
             </View>
           ) : (
@@ -130,7 +161,12 @@ export function SavedRoutesScreen() {
                 route={savedRoute.route}
                 title={savedRoute.custom_name}
                 location={toLocationLabel(savedRoute)}
-                tags={savedRoute.surface ? [savedRoute.surface] : []}
+                tags={[
+                  getActivityLabel(savedRoute.activity),
+                  ...(savedRoute.activity === "foot" && savedRoute.surface
+                    ? [savedRoute.surface]
+                    : []),
+                ]}
                 showMap={false}
                 isSaved
                 isSaveLoading={removingRouteId === savedRoute.id}
@@ -138,7 +174,11 @@ export function SavedRoutesScreen() {
                 onPress={() =>
                   navigation.navigate("Generate", {
                     screen: "RouteDetail",
-                    params: { route: savedRoute.route, surface: savedRoute.surface },
+                    params: {
+                      route: savedRoute.route,
+                      activity: savedRoute.activity,
+                      surface: savedRoute.surface,
+                    },
                   })
                 }
               />
@@ -179,8 +219,26 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   filtersWrapper: {
-    marginTop: 16,
+    marginTop: 10,
     marginBottom: 24,
+  },
+  filterHeader: {
+    marginTop: 16,
+    marginHorizontal: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+  filterTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  filterSummary: {
+    fontSize: 12,
+    color: "#6b7280",
+    fontWeight: "500",
   },
   filtersContainer: {
     paddingHorizontal: 16,
