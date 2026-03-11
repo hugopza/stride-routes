@@ -7,7 +7,7 @@ export type SavedRoute = {
   user_id: string;
   custom_name: string;
   route_fingerprint: string;
-  route_provider: string | null;
+  route_provider: "real" | null;
   surface: SavedRouteSurface;
   route: CandidateRoute;
   created_at: string;

@@ -20,7 +20,7 @@ export type RouteCoordinate = {
 export type CandidateRoute = {
   id: string;
   name: string;
-  provider?: "real" | "fake";
+  provider?: "real";
   distanceKm: number;
   estimatedDurationMinutes: number;
   elevationGainM: number | null;

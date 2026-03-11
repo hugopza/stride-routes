@@ -30,7 +30,6 @@ type RouteParamsWithUi = RouteParams & {
   start?: string;
   end?: string;
   surface: string;
-  intensity: string;
   waypointLabels: string[];
 };
 
@@ -160,7 +159,6 @@ export function HomeScreen({ navigation }: Props) {
   const [end, setEnd] = useState("");
   const [waypointInputs, setWaypointInputs] = useState<WaypointInput[]>([]);
   const [surface, setSurface] = useState("Mixed");
-  const [intensity, setIntensity] = useState("Balanced");
   const [isGenerating, setIsGenerating] = useState(false);
 
   const [startCoordinate, setStartCoordinate] = useState<
@@ -672,7 +670,6 @@ export function HomeScreen({ navigation }: Props) {
         .map((waypoint) => waypoint.coordinate)
         .filter((point): point is RouteCoordinate => Boolean(point)),
       surface,
-      intensity,
       waypointLabels: waypointInputs.map((waypoint) => waypoint.label),
     };
 
@@ -1023,20 +1020,6 @@ export function HomeScreen({ navigation }: Props) {
             ))}
           </View>
         )}
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>INTENSITY</Text>
-        <View style={styles.chipRow}>
-          {["Easy (flatter)", "Balanced", "Hard (hills)"].map((s) => (
-            <Chip
-              key={s}
-              label={s}
-              selected={intensity === s}
-              onPress={() => setIntensity(s)}
-            />
-          ))}
-        </View>
       </View>
 
       <View style={styles.section}>

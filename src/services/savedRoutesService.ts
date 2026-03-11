@@ -12,7 +12,7 @@ type SavedRouteRow = {
   user_id: string;
   custom_name: string;
   route_fingerprint: string;
-  route_provider: string | null;
+  route_provider: "real" | null;
   surface: SavedRouteSurface;
   distance_km: number;
   estimated_duration_minutes: number;
@@ -53,10 +53,7 @@ function mapSavedRouteRow(row: SavedRouteRow): SavedRoute {
     route: {
       id: row.id,
       name: row.custom_name,
-      provider:
-        row.route_provider === "real" || row.route_provider === "fake"
-          ? row.route_provider
-          : undefined,
+      provider: row.route_provider === "real" ? "real" : undefined,
       distanceKm: row.distance_km,
       estimatedDurationMinutes: row.estimated_duration_minutes,
       elevationGainM: row.elevation_gain_m,

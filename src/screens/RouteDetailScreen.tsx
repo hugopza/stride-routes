@@ -41,14 +41,6 @@ export function RouteDetailScreen({ navigation, route }: Props) {
   const savedRoute = getSavedRouteForCandidate(selectedRoute);
 
   const onExportGpx = async () => {
-    if (selectedRoute.provider === "fake") {
-      Alert.alert(
-        "Export GPX",
-        "Synthetic development routes cannot be exported as GPX.",
-      );
-      return;
-    }
-
     if (polyline.length < 2) {
       Alert.alert("Export GPX", "This route cannot be exported yet.");
       return;
