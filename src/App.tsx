@@ -5,6 +5,7 @@ import "react-native-gesture-handler";
 
 import { TabNavigator } from "./navigation/TabNavigator";
 import { AuthProvider, useAuth } from "./providers/AuthProvider";
+import { SavedRoutesProvider } from "./providers/SavedRoutesProvider";
 import { AuthScreen } from "./screens/AuthScreen";
 
 function AppShell() {
@@ -33,10 +34,12 @@ function AppShell() {
 export default function App() {
   return (
     <AuthProvider>
-      <NavigationContainer>
-        <StatusBar style="dark" />
-        <AppShell />
-      </NavigationContainer>
+      <SavedRoutesProvider>
+        <NavigationContainer>
+          <StatusBar style="dark" />
+          <AppShell />
+        </NavigationContainer>
+      </SavedRoutesProvider>
     </AuthProvider>
   );
 }

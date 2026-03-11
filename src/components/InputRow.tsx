@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
 import {
+  Platform,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type StyleProp,
   type TextInputProps,
+  type ViewStyle,
 } from "react-native";
 
 interface InputRowProps extends TextInputProps {
@@ -12,6 +15,7 @@ interface InputRowProps extends TextInputProps {
   hint?: string;
   error?: string;
   rightAccessory?: ReactNode;
+  containerStyle?: StyleProp<ViewStyle>;
 }
 
 export function InputRow({
@@ -20,10 +24,11 @@ export function InputRow({
   error,
   style,
   rightAccessory,
+  containerStyle,
   ...props
 }: InputRowProps) {
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, containerStyle]}>
       {label && <Text style={styles.label}>{label}</Text>}
       <View style={[styles.inputContainer, error && styles.inputError]}>
         <TextInput
@@ -44,7 +49,6 @@ export function InputRow({
 const styles = StyleSheet.create({
   container: {
     gap: 6,
-    flex: 1,
   },
   label: {
     fontSize: 14,
@@ -59,12 +63,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: "#fff",
     paddingHorizontal: 12,
+    height: 48,
+    overflow: "hidden",
   },
   input: {
     flex: 1,
-    paddingVertical: 12,
+    minWidth: 0,
+    height: 48,
     fontSize: 16,
     color: "#111827",
+    paddingVertical: 0,
+    textAlignVertical: "center",
   },
   inputError: {
     borderColor: "#ef4444",

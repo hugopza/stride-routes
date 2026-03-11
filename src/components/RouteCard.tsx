@@ -1,7 +1,8 @@
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+
 import type { CandidateRoute } from "../types/route";
 import { Button } from "./Button";
-import { Ionicons } from "@expo/vector-icons";
 import { RouteMapPreview } from "./RouteMapPreview";
 
 interface RouteCardProps {
@@ -11,6 +12,8 @@ interface RouteCardProps {
   showMap?: boolean;
   location?: string;
   isSaved?: boolean;
+  onToggleSaved?: () => void;
+  isSaveLoading?: boolean;
   title?: string;
   timeLabel?: string;
 }
@@ -22,22 +25,24 @@ export function RouteCard({
   showMap = true,
   location,
   isSaved,
+  onToggleSaved,
+  isSaveLoading,
   title,
   timeLabel,
 }: RouteCardProps) {
   const elevationLabel =
     typeof route.elevationGainM === "number" &&
     Number.isFinite(route.elevationGainM)
-    ? `+${route.elevationGainM} m`
-    : "N/A";
+      ? `+${route.elevationGainM} m`
+      : "N/A";
 
   return (
     <Pressable style={styles.card} onPress={onPress}>
-      {showMap && (
+      {showMap ? (
         <View style={styles.mapContainer}>
           <RouteMapPreview polyline={route.polyline ?? []} height={140} />
         </View>
-      )}
+      ) : null}
 
       <View style={styles.content}>
         <View style={styles.header}>
@@ -51,13 +56,26 @@ export function RouteCard({
             ) : null}
           </View>
           {isSaved !== undefined ? (
-            <Ionicons 
-              name={isSaved ? "star" : "star-outline"} 
-              size={24} 
-              color={isSaved ? "#111827" : "#d1d5db"} 
-            />
+            <Pressable
+              onPress={(event) => {
+                event.stopPropagation();
+                onToggleSaved?.();
+              }}
+              disabled={!onToggleSaved || isSaveLoading}
+              hitSlop={8}
+            >
+              {isSaveLoading ? (
+                <ActivityIndicator size="small" color="#111827" />
+              ) : (
+                <Ionicons
+                  name={isSaved ? "star" : "star-outline"}
+                  size={24}
+                  color={isSaved ? "#111827" : "#d1d5db"}
+                />
+              )}
+            </Pressable>
           ) : (
-            <Text style={styles.star}>★</Text>
+            <Text style={styles.star}>*</Text>
           )}
         </View>
 
@@ -69,7 +87,9 @@ export function RouteCard({
           <View style={styles.statDivider} />
           <View style={styles.statCol}>
             <Text style={styles.statLabel}>TIME</Text>
-            <Text style={styles.statValue}>{timeLabel ?? `${route.estimatedDurationMinutes} min`}</Text>
+            <Text style={styles.statValue}>
+              {timeLabel ?? `${route.estimatedDurationMinutes} min`}
+            </Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statCol}>
@@ -78,7 +98,7 @@ export function RouteCard({
           </View>
         </View>
 
-        {tags && tags.length > 0 && (
+        {tags && tags.length > 0 ? (
           <View style={styles.tagsRow}>
             {tags.map((tag) => (
               <View key={tag} style={styles.tag}>
@@ -86,7 +106,7 @@ export function RouteCard({
               </View>
             ))}
           </View>
-        )}
+        ) : null}
 
         <Button label="View Details" onPress={onPress} style={styles.button} />
       </View>

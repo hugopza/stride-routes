@@ -571,6 +571,7 @@ export function HomeScreen({ navigation }: Props) {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>ORIGIN</Text>
         <InputRow
+          containerStyle={{ flex: 1 }}
           placeholder="Search address, city, postcode, POI..."
           value={start}
           onChangeText={(text) => {
@@ -601,6 +602,7 @@ export function HomeScreen({ navigation }: Props) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>DESTINATION</Text>
           <InputRow
+            containerStyle={{ flex: 1 }}
             placeholder="Search destination..."
             value={end}
             onChangeText={(text) => {
@@ -637,12 +639,14 @@ export function HomeScreen({ navigation }: Props) {
             <>
               <View style={styles.row}>
                 <InputRow
+                  containerStyle={{ flex: 1 }}
                   label="Hours"
                   value={hours}
                   onChangeText={setHours}
                   keyboardType="numeric"
                 />
                 <InputRow
+                  containerStyle={{ flex: 1 }}
                   label="Minutes"
                   value={minutes}
                   onChangeText={setMinutes}
@@ -650,6 +654,7 @@ export function HomeScreen({ navigation }: Props) {
                 />
               </View>
               <InputRow
+                containerStyle={{ flex: 1 }}
                 label={
                   activity === "road_cycling"
                     ? "Average speed (km/h)"
@@ -682,6 +687,7 @@ export function HomeScreen({ navigation }: Props) {
             </>
           ) : (
             <InputRow
+              containerStyle={{ flex: 1 }}
               label="Target distance (km)"
               value={distanceKm}
               onChangeText={setDistanceKm}

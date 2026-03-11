@@ -5,15 +5,21 @@ import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { RouteMapPreview } from "../components/RouteMapPreview";
+import { SaveRouteModal } from "../components/SaveRouteModal";
 import { exportPolylineAsGpx } from "../lib/gpx";
 import type { RoutesStackParamList } from "../navigation/types";
+import { useSavedRoutes } from "../providers/SavedRoutesProvider";
 
 type Props = NativeStackScreenProps<RoutesStackParamList, "RouteDetail">;
 
 export function RouteDetailScreen({ navigation, route }: Props) {
-  const { route: selectedRoute } = route.params;
+  const { route: selectedRoute, surface } = route.params;
   const [feedback, setFeedback] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
+  const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const { getSavedRouteForCandidate, removeSavedRoute, saveRoute } =
+    useSavedRoutes();
   const polyline = (selectedRoute.polyline ?? []).filter(
     (point) =>
       Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
@@ -32,6 +38,7 @@ export function RouteDetailScreen({ navigation, route }: Props) {
     Number.isFinite(selectedRoute.elevationGainM)
       ? `${selectedRoute.elevationGainM} m`
       : "N/A";
+  const savedRoute = getSavedRouteForCandidate(selectedRoute);
 
   const onExportGpx = async () => {
     if (selectedRoute.provider === "fake") {
@@ -58,6 +65,47 @@ export function RouteDetailScreen({ navigation, route }: Props) {
       Alert.alert("Export GPX", message);
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const onToggleSaved = async () => {
+    try {
+      if (savedRoute) {
+        setIsSavingRoute(true);
+        await removeSavedRoute(savedRoute.id);
+        return;
+      }
+      setShowSaveModal(true);
+    } catch (error) {
+      Alert.alert(
+        "Saved routes",
+        error instanceof Error
+          ? error.message
+          : "Could not update this saved route.",
+      );
+    } finally {
+      setIsSavingRoute(false);
+    }
+  };
+
+  const onConfirmSave = async (customName: string) => {
+    setIsSavingRoute(true);
+    try {
+      await saveRoute({
+        customName,
+        route: selectedRoute,
+        surface: surface ?? null,
+      });
+      setShowSaveModal(false);
+    } catch (error) {
+      Alert.alert(
+        "Saved routes",
+        error instanceof Error
+          ? error.message
+          : "Could not save this route right now.",
+      );
+    } finally {
+      setIsSavingRoute(false);
     }
   };
 
@@ -104,10 +152,11 @@ export function RouteDetailScreen({ navigation, route }: Props) {
 
         <View style={styles.secondaryActions}>
           <Button
-            label="Save"
+            label={savedRoute ? "Remove saved" : "Save"}
             variant="outline"
             style={{ flex: 1 }}
-            onPress={() => Alert.alert("Save", "Saved.")}
+            onPress={() => void onToggleSaved()}
+            loading={isSavingRoute}
           />
         </View>
 
@@ -132,6 +181,13 @@ export function RouteDetailScreen({ navigation, route }: Props) {
           variant="outline"
           style={{ backgroundColor: "#f3f4f6", borderColor: "#e5e7eb" }}
           onPress={() => Alert.alert("Feedback", "Submitted.")}
+        />
+        <SaveRouteModal
+          visible={showSaveModal}
+          initialValue={selectedRoute.name}
+          loading={isSavingRoute}
+          onCancel={() => setShowSaveModal(false)}
+          onConfirm={(name) => void onConfirmSave(name)}
         />
       </ScrollView>
     </View>

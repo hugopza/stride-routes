@@ -11,20 +11,28 @@ import {
 } from "react-native";
 import { Button } from "../components/Button";
 import { RouteCard } from "../components/RouteCard";
+import { SaveRouteModal } from "../components/SaveRouteModal";
 import type { RoutesStackParamList } from "../navigation/types";
+import { useSavedRoutes } from "../providers/SavedRoutesProvider";
 import { routeGenerationService } from "../services/routeGenerationService";
 import type { CandidateRoute } from "../types/route";
+import type { SavedRouteSurface } from "../types/saved-route";
 
 type Props = NativeStackScreenProps<RoutesStackParamList, "Results">;
 
 export function ResultsScreen({ navigation, route }: Props) {
   const { params, routes } = route.params;
+  const { getSavedRouteForCandidate, removeSavedRoute, saveRoute } =
+    useSavedRoutes();
 
   const [list, setList] = useState<CandidateRoute[]>(routes);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [generationNonce, setGenerationNonce] = useState(
     params.generationNonce ?? Date.now(),
   );
+  const [routeToSave, setRouteToSave] = useState<CandidateRoute | null>(null);
+  const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [savingRouteId, setSavingRouteId] = useState<string | null>(null);
 
   useEffect(() => {
     setGenerationNonce(params.generationNonce ?? Date.now());
@@ -89,6 +97,61 @@ export function ResultsScreen({ navigation, route }: Props) {
     }, 180);
   };
 
+  const normalizedSurface =
+    params.surface === "asphalt" ||
+    params.surface === "mixed" ||
+    params.surface === "trail"
+      ? (params.surface as SavedRouteSurface)
+      : null;
+
+  const onToggleSaved = async (candidate: CandidateRoute, index: number) => {
+    const existing = getSavedRouteForCandidate(candidate);
+
+    try {
+      if (existing) {
+        setSavingRouteId(candidate.id);
+        await removeSavedRoute(existing.id);
+        return;
+      }
+
+      setRouteToSave({ ...candidate, name: `Route ${index + 1}` });
+    } catch (error) {
+      Alert.alert(
+        "Saved routes",
+        error instanceof Error
+          ? error.message
+          : "Could not update this saved route.",
+      );
+      setSavingRouteId(null);
+    }
+  };
+
+  const onConfirmSave = async (customName: string) => {
+    if (!routeToSave) {
+      return;
+    }
+
+    setIsSavingRoute(true);
+    try {
+      await saveRoute({
+        customName,
+        route: routeToSave,
+        surface: normalizedSurface,
+      });
+      setRouteToSave(null);
+    } catch (error) {
+      Alert.alert(
+        "Saved routes",
+        error instanceof Error
+          ? error.message
+          : "Could not save this route right now.",
+      );
+    } finally {
+      setIsSavingRoute(false);
+      setSavingRouteId(null);
+    }
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {list.length === 0 ? (
@@ -111,8 +174,14 @@ export function ResultsScreen({ navigation, route }: Props) {
             route={candidate}
             title={`Route ${index + 1}`}
             timeLabel={params.goalMode === "time" ? undefined : "N/A"}
+            isSaved={Boolean(getSavedRouteForCandidate(candidate))}
+            onToggleSaved={() => void onToggleSaved(candidate, index)}
+            isSaveLoading={savingRouteId === candidate.id}
             onPress={() => {
-              navigation.navigate("RouteDetail", { route: candidate });
+              navigation.navigate("RouteDetail", {
+                route: candidate,
+                surface: normalizedSurface,
+              });
             }}
             tags={
               index === 0 ? ["FLATTER", "MIXED"] : index === 1 ? ["URBAN"] : []
@@ -129,6 +198,16 @@ export function ResultsScreen({ navigation, route }: Props) {
           loading={isRegenerating}
         />
       </View>
+      <SaveRouteModal
+        visible={routeToSave !== null}
+        initialValue={routeToSave?.name}
+        loading={isSavingRoute}
+        onCancel={() => {
+          setRouteToSave(null);
+          setSavingRouteId(null);
+        }}
+        onConfirm={(name) => void onConfirmSave(name)}
+      />
     </ScrollView>
   );
 }

@@ -1,99 +1,149 @@
 import { Ionicons } from "@expo/vector-icons";
-import { ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
+import { useCallback, useMemo, useState } from "react";
+import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+
 import { Chip } from "../components/Chip";
 import { RouteCard } from "../components/RouteCard";
-import type { CandidateRoute } from "../types/route";
+import type { RootTabParamList } from "../navigation/types";
+import { useSavedRoutes } from "../providers/SavedRoutesProvider";
+import type { SavedRoute } from "../types/saved-route";
 
-const DUMMY_ROUTES: (CandidateRoute & {
-  location: string;
-  tags: string[];
-  isSaved: boolean;
-})[] = [
-  {
-    id: "1",
-    name: "Morning Run",
-    location: "Central Park, NY",
-    distanceKm: 5.2,
-    estimatedDurationMinutes: 28,
-    elevationGainM: 45,
-    polyline: [],
-    tags: ["ASPHALT", "EASY"],
-    isSaved: true,
-  },
-  {
-    id: "2",
-    name: "Beach Loop",
-    location: "Santa Monica, CA",
-    distanceKm: 12.0,
-    estimatedDurationMinutes: 65,
-    elevationGainM: 12,
-    polyline: [],
-    tags: ["MIXED", "BALANCED"],
-    isSaved: true,
-  },
-  {
-    id: "3",
-    name: "Forest Trail",
-    location: "Portland, OR",
-    distanceKm: 8.5,
-    estimatedDurationMinutes: 52,
-    elevationGainM: 210,
-    polyline: [],
-    tags: ["TRAIL", "HARD"],
-    isSaved: true,
-  },
-];
+const FILTERS = ["All", "Trail", "Asphalt", "Mixed"] as const;
 
-const FILTERS = ["All", "Trail", "Asphalt", "Mixed"];
+function toLocationLabel(route: SavedRoute): string | undefined {
+  if (!route.surface) {
+    return undefined;
+  }
+
+  return `${route.surface.charAt(0).toUpperCase()}${route.surface.slice(1)} route`;
+}
 
 export function SavedRoutesScreen() {
+  const navigation = useNavigation<BottomTabNavigationProp<RootTabParamList>>();
+  const {
+    savedRoutes,
+    isSavedRoutesReady,
+    savedRoutesError,
+    refreshSavedRoutes,
+    removeSavedRoute,
+  } = useSavedRoutes();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFilter, setSelectedFilter] = useState<(typeof FILTERS)[number]>(
+    "All",
+  );
+  const [removingRouteId, setRemovingRouteId] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshSavedRoutes();
+    }, [refreshSavedRoutes]),
+  );
+
+  const filteredRoutes = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    return savedRoutes.filter((route) => {
+      const matchesSearch =
+        !query || route.custom_name.toLowerCase().includes(query);
+      const matchesFilter =
+        selectedFilter === "All" ||
+        route.surface?.toLowerCase() === selectedFilter.toLowerCase();
+
+      return matchesSearch && matchesFilter;
+    });
+  }, [savedRoutes, searchQuery, selectedFilter]);
+
+  const onToggleSaved = async (route: SavedRoute) => {
+    setRemovingRouteId(route.id);
+    try {
+      await removeSavedRoute(route.id);
+    } finally {
+      setRemovingRouteId(null);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView
         showsVerticalScrollIndicator={false}
         style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
       >
-        {/* Search Bar */}
         <View style={styles.searchContainer}>
           <Ionicons name="search" size={20} color="#9ca3af" />
           <TextInput
             style={styles.searchInput}
             placeholder="Search saved routes"
             placeholderTextColor="#9ca3af"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
           />
         </View>
 
-        {/* Filter Chips */}
         <View style={styles.filtersWrapper}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.filtersContainer}
           >
-            {FILTERS.map((filter, index) => (
+            {FILTERS.map((filter) => (
               <Chip
                 key={filter}
                 label={filter}
-                selected={index === 0}
+                selected={selectedFilter === filter}
                 style={styles.chip}
+                onPress={() => setSelectedFilter(filter)}
               />
             ))}
           </ScrollView>
         </View>
 
-        {/* Routes List */}
         <View style={styles.listContainer}>
-          {DUMMY_ROUTES.map((route) => (
-            <RouteCard
-              key={route.id}
-              route={route}
-              location={route.location}
-              tags={route.tags}
-              showMap={false}
-              isSaved={route.isSaved}
-              onPress={() => {}}
-            />
-          ))}
+          {!isSavedRoutesReady ? (
+            <View style={styles.stateCard}>
+              <Ionicons name="bookmark-outline" size={24} color="#9ca3af" />
+              <Text style={styles.stateTitle}>Loading saved routes</Text>
+              <Text style={styles.stateText}>
+                Fetching your saved routes from Supabase.
+              </Text>
+            </View>
+          ) : savedRoutesError ? (
+            <View style={styles.stateCard}>
+              <Ionicons name="alert-circle-outline" size={24} color="#dc2626" />
+              <Text style={styles.stateTitle}>Could not load saved routes</Text>
+              <Text style={styles.stateText}>{savedRoutesError}</Text>
+            </View>
+          ) : filteredRoutes.length === 0 ? (
+            <View style={styles.stateCard}>
+              <Ionicons name="bookmark-outline" size={24} color="#9ca3af" />
+              <Text style={styles.stateTitle}>No saved routes yet</Text>
+              <Text style={styles.stateText}>
+                Save a generated route to see it here.
+              </Text>
+            </View>
+          ) : (
+            filteredRoutes.map((savedRoute) => (
+              <RouteCard
+                key={savedRoute.id}
+                route={savedRoute.route}
+                title={savedRoute.custom_name}
+                location={toLocationLabel(savedRoute)}
+                tags={savedRoute.surface ? [savedRoute.surface] : []}
+                showMap={false}
+                isSaved
+                isSaveLoading={removingRouteId === savedRoute.id}
+                onToggleSaved={() => void onToggleSaved(savedRoute)}
+                onPress={() =>
+                  navigation.navigate("Generate", {
+                    screen: "RouteDetail",
+                    params: { route: savedRoute.route, surface: savedRoute.surface },
+                  })
+                }
+              />
+            ))
+          )}
         </View>
       </ScrollView>
     </View>
@@ -105,23 +155,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#fff",
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingTop: 60, // approximate safe area top
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6", // very subtle standard border
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#111827",
-  },
   scrollView: {
     flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 32,
   },
   searchContainer: {
     flexDirection: "row",
@@ -153,6 +191,25 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingHorizontal: 16,
-    paddingBottom: 32,
+  },
+  stateCard: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#f9fafb",
+  },
+  stateTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  stateText: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#4b5563",
+    textAlign: "center",
   },
 });
