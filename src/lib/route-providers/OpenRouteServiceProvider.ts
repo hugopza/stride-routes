@@ -93,10 +93,21 @@ type EvaluatedCandidate = {
   score: number;
   hardScore: number;
   preferenceScore: number;
-  source: "endpoint" | "round-trip" | "waypoint-fallback";
+  source:
+    | "endpoint"
+    | "round-trip"
+    | "waypoint-fallback"
+    | "waypoint-distance-fit";
   requestedLengthMeters?: number;
   roundTripPoints?: number;
   pattern?: WaypointPattern;
+};
+
+type WaypointRouteCandidate = {
+  coordinates: RouteCoordinate[];
+  bearingDeg: number;
+  radiusKm: number;
+  variant: number;
 };
 
 type RoundTripCandidate = {
@@ -725,10 +736,22 @@ export class OpenRouteServiceProvider implements RouteProvider {
     end: RouteCoordinate,
     allowAlternatives: boolean,
   ): Promise<OrsResponse> {
+    return this.requestDirectionsWithCoordinates(
+      [start, end],
+      allowAlternatives,
+      "directed",
+    );
+  }
+
+  private async requestDirectionsWithCoordinates(
+    coordinates: RouteCoordinate[],
+    allowAlternatives: boolean,
+    context: string,
+  ): Promise<OrsResponse> {
     this.debugLog("[ors] request", {
       profile: "foot-walking",
-      start,
-      end,
+      context,
+      coordinates,
       coordOrder: "[lon, lat]",
       allowAlternatives,
       elevation: true,
@@ -741,10 +764,7 @@ export class OpenRouteServiceProvider implements RouteProvider {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        coordinates: [
-          [start.longitude, start.latitude],
-          [end.longitude, end.latitude],
-        ],
+        coordinates: coordinates.map((point) => [point.longitude, point.latitude]),
         elevation: true,
         extra_info: ["surface", "waytype", "waycategory"],
         ...(allowAlternatives
@@ -779,7 +799,195 @@ export class OpenRouteServiceProvider implements RouteProvider {
         (feature.geometry?.coordinates ?? []).some((coordinate) => coordinate.length >= 3),
       ),
     });
-    return data;
+      return data;
+  }
+
+  private getWaypointConstrainedCoordinates(
+    params: RouteParams,
+  ): RouteCoordinate[] | null {
+    const waypoints = params.waypoints ?? [];
+    if (waypoints.length === 0) {
+      return null;
+    }
+    if (!params.startCoordinate) {
+      throw new Error("Missing start coordinate for waypoint routing.");
+    }
+    if (waypoints.length > 3) {
+      throw new Error("This MVP supports up to 3 waypoints.");
+    }
+
+    if (params.circular) {
+      return [params.startCoordinate, ...waypoints, params.startCoordinate];
+    }
+
+    if (!params.endCoordinate) {
+      throw new Error("Destination is required when generating a route with waypoints.");
+    }
+
+    return [params.startCoordinate, ...waypoints, params.endCoordinate];
+  }
+
+  private midpointCoordinate(
+    a: RouteCoordinate,
+    b: RouteCoordinate,
+  ): RouteCoordinate {
+    return {
+      latitude: (a.latitude + b.latitude) / 2,
+      longitude: (a.longitude + b.longitude) / 2,
+    };
+  }
+
+  private bearingBetween(
+    a: RouteCoordinate,
+    b: RouteCoordinate,
+  ): number {
+    const lat1 = (a.latitude * Math.PI) / 180;
+    const lat2 = (b.latitude * Math.PI) / 180;
+    const lonDelta = ((b.longitude - a.longitude) * Math.PI) / 180;
+
+    const y = Math.sin(lonDelta) * Math.cos(lat2);
+    const x =
+      Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(lonDelta);
+    const bearing = (Math.atan2(y, x) * 180) / Math.PI;
+    return (bearing + 360) % 360;
+  }
+
+  private estimateDetourRadiusKm(
+    legDistanceKm: number,
+    extraDistanceKm: number,
+  ): number {
+    if (legDistanceKm <= 0 || extraDistanceKm <= 0) {
+      return 0;
+    }
+
+    const halfLeg = legDistanceKm / 2;
+    const targetHalfPath = (legDistanceKm + extraDistanceKm) / 2;
+    const radius = Math.sqrt(
+      Math.max(0, targetHalfPath * targetHalfPath - halfLeg * halfLeg),
+    );
+
+    return Math.max(
+      0.12,
+      Math.min(Math.max(legDistanceKm * 1.1, 0.35), radius),
+    );
+  }
+
+  private buildWaypointDistanceCandidates(
+    requiredCoordinates: RouteCoordinate[],
+    targetDistanceKm: number,
+    nonce: number,
+  ): WaypointRouteCandidate[] {
+    const baseCandidate: WaypointRouteCandidate = {
+      coordinates: requiredCoordinates,
+      bearingDeg: 0,
+      radiusKm: 0,
+      variant: 0,
+    };
+
+    if (requiredCoordinates.length < 2 || targetDistanceKm <= 0) {
+      return [baseCandidate];
+    }
+
+    const legs = requiredCoordinates
+      .slice(0, -1)
+      .map((point, index) => {
+        const nextPoint = requiredCoordinates[index + 1];
+        const distanceKm = this.haversineKm(point, nextPoint);
+        return {
+          index,
+          start: point,
+          end: nextPoint,
+          distanceKm,
+          midpoint: this.midpointCoordinate(point, nextPoint),
+          bearingDeg: this.bearingBetween(point, nextPoint),
+        };
+      })
+      .filter((leg) => leg.distanceKm >= 0.2)
+      .sort((a, b) => b.distanceKm - a.distanceKm);
+
+    if (legs.length === 0) {
+      return [baseCandidate];
+    }
+
+    const requiredDistanceKm = legs.reduce(
+      (total, leg) => total + leg.distanceKm,
+      0,
+    );
+    const desiredExtraKm = Math.max(0, targetDistanceKm - requiredDistanceKm);
+    if (desiredExtraKm <= Math.max(0.35, targetDistanceKm * 0.06)) {
+      return [baseCandidate];
+    }
+
+    const rng = this.createNonceRng(
+      `waypoint-distance-${nonce}-${requiredCoordinates
+        .map((point) => `${point.latitude.toFixed(5)},${point.longitude.toFixed(5)}`)
+        .join("|")}-${targetDistanceKm.toFixed(2)}`,
+    );
+
+    const topLegs = legs.slice(0, Math.min(3, legs.length));
+    const sideBias = rng() > 0.5 ? 1 : -1;
+    const patterns = [
+      [{ leg: topLegs[0], side: sideBias, weight: 1 }],
+      [{ leg: topLegs[0], side: -sideBias, weight: 1 }],
+      topLegs.slice(0, 2).map((leg, index) => ({
+        leg,
+        side: index % 2 === 0 ? sideBias : -sideBias,
+        weight: 0.58,
+      })),
+      topLegs.slice(0, 2).map((leg, index) => ({
+        leg,
+        side: index % 2 === 0 ? -sideBias : sideBias,
+        weight: 0.58,
+      })),
+      topLegs.map((leg, index) => ({
+        leg,
+        side: index % 2 === 0 ? sideBias : -sideBias,
+        weight: 0.38,
+      })),
+    ].filter((pattern) => pattern.length > 0);
+
+    const candidates = patterns.map((pattern, patternIndex) => {
+      const byLegIndex = new Map<number, RouteCoordinate>();
+      for (const segment of pattern) {
+        const radiusKm = this.estimateDetourRadiusKm(
+          segment.leg.distanceKm,
+          desiredExtraKm * segment.weight,
+        );
+        const anchor = this.offsetCoordinate(
+          segment.leg.midpoint,
+          radiusKm * (0.92 + rng() * 0.18),
+          segment.leg.bearingDeg + segment.side * (90 + (rng() - 0.5) * 18),
+        );
+        byLegIndex.set(segment.leg.index, anchor);
+      }
+
+      const coordinates: RouteCoordinate[] = [];
+      requiredCoordinates.forEach((point, index) => {
+        coordinates.push(point);
+        const anchor = byLegIndex.get(index);
+        if (anchor) {
+          coordinates.push(anchor);
+        }
+      });
+
+      return {
+        coordinates,
+        bearingDeg: pattern[0]?.leg.bearingDeg ?? 0,
+        radiusKm: Math.max(
+          0,
+          ...pattern.map((segment) =>
+            this.estimateDetourRadiusKm(
+              segment.leg.distanceKm,
+              desiredExtraKm * segment.weight,
+            ),
+          ),
+        ),
+        variant: patternIndex + 1,
+      };
+    });
+
+    return [baseCandidate, ...candidates];
   }
 
   private hasRequiredExtrasForSurfaceModel(feature: OrsFeature): boolean {
@@ -1768,6 +1976,126 @@ export class OpenRouteServiceProvider implements RouteProvider {
     return { results, mappedCandidates };
   }
 
+  private async evaluateWaypointRouteCandidates(
+    candidates: WaypointRouteCandidate[],
+    pace: number,
+    targetDistanceKm: number,
+    surfacePreference: SurfacePreference,
+    mode: "directed" | "start-only-circular",
+    start: RouteCoordinate,
+  ): Promise<EvaluationBatch> {
+    const results: EvaluatedCandidate[] = [];
+    let mappedCandidates = 0;
+
+    for (const candidate of candidates) {
+      try {
+        const data = await this.requestDirectionsWithCoordinates(
+          candidate.coordinates,
+          false,
+          `waypoint-constrained-${candidate.variant}`,
+        );
+        const mapped = this.mapFeaturesToRoutes(data, pace);
+        mappedCandidates += mapped.length;
+        const gated = this.applySurfaceGate(
+          mapped,
+          surfacePreference,
+          `waypoint-constrained-${candidate.variant}`,
+        );
+
+        if (gated.length > 0) {
+          const scored = gated.map((item) => {
+            const score = this.computeModeScore(
+              mode,
+              item.route,
+              item.surfaceProfile,
+              targetDistanceKm,
+              surfacePreference,
+              mode === "start-only-circular" ? start : undefined,
+            );
+            return {
+              ...item,
+              hard: score.hard,
+              preference: score.preference,
+            };
+          });
+
+          const best = scored.sort((a, b) =>
+            this.compareByDistanceThenQuality(a, b, targetDistanceKm),
+          )[0];
+          const score = this.computeModeScore(
+            mode,
+            best.route,
+            best.surfaceProfile,
+            targetDistanceKm,
+            surfacePreference,
+            mode === "start-only-circular" ? start : undefined,
+          );
+
+          results.push({
+            route: best.route,
+            surfaceProfile: best.surfaceProfile,
+            endpoint: best.route.polyline[best.route.polyline.length - 1],
+            bearingDeg: candidate.bearingDeg,
+            radiusKm: candidate.radiusKm,
+            score: score.total,
+            hardScore: score.hard,
+            preferenceScore: score.preference,
+            source: "waypoint-distance-fit",
+          });
+        }
+      } catch (error) {
+        this.debugLog("[ors] waypoint-candidate-failed", {
+          variant: candidate.variant,
+          coordinates: candidate.coordinates.length,
+          reason: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    return { results, mappedCandidates };
+  }
+
+  private pickDiverseWaypointBest(
+    scored: EvaluatedCandidate[],
+    targetDistanceKm: number,
+  ): CandidateRoute[] {
+    const basePool = [...scored].sort((a, b) =>
+      this.compareByDistanceThenQuality(a, b, targetDistanceKm),
+    );
+    const bestHard = basePool.reduce(
+      (best, item) => Math.min(best, item.hardScore),
+      Number.POSITIVE_INFINITY,
+    );
+    const qualityThreshold = bestHard + 1.4;
+    const ranked = basePool.filter((item) => item.hardScore <= qualityThreshold);
+
+    const selected: EvaluatedCandidate[] = [];
+    const minSeparationKm = Math.max(0.18, Math.min(0.8, targetDistanceKm * 0.08));
+
+    for (const candidate of (ranked.length > 0 ? ranked : basePool)) {
+      const candidateMid =
+        candidate.route.polyline[Math.floor(candidate.route.polyline.length / 2)];
+      const isTooClose = selected.some((chosen) => {
+        const chosenMid =
+          chosen.route.polyline[Math.floor(chosen.route.polyline.length / 2)];
+        return this.haversineKm(candidateMid, chosenMid) < minSeparationKm;
+      });
+
+      if (!isTooClose) {
+        selected.push(candidate);
+      }
+      if (selected.length === 3) {
+        break;
+      }
+    }
+
+    return selected.map((item, index) => ({
+      ...item.route,
+      id: `ors-waypoint-${index + 1}`,
+      name: index === 0 ? "OpenStreetMap Route" : `Alternative ${index + 1}`,
+    }));
+  }
+
   private async generateFromStartOnly(
     start: RouteCoordinate,
     targetDistanceKm: number,
@@ -2013,6 +2341,45 @@ export class OpenRouteServiceProvider implements RouteProvider {
     }
     const surfacePreference = normalizeSurfacePreference(params.surface);
     const pace = params.paceMinPerKm && params.paceMinPerKm > 0 ? params.paceMinPerKm : 6;
+    const waypointCoordinates = this.getWaypointConstrainedCoordinates(params);
+    const generationNonce = this.resolveGenerationNonce(params.generationNonce);
+
+    if (waypointCoordinates) {
+      const candidates = this.buildWaypointDistanceCandidates(
+        waypointCoordinates,
+        params.targetDistanceKm,
+        generationNonce,
+      );
+      const evaluated = await this.evaluateWaypointRouteCandidates(
+        candidates,
+        pace,
+        params.targetDistanceKm,
+        surfacePreference,
+        params.circular ? "start-only-circular" : "directed",
+        params.startCoordinate,
+      );
+
+      if (evaluated.mappedCandidates > 0 && evaluated.results.length === 0) {
+        throw new NoSurfaceMatchError(surfacePreference);
+      }
+
+      const finalRoutes = this.pickDiverseWaypointBest(
+        evaluated.results,
+        params.targetDistanceKm,
+      );
+      this.debugLog("[ors] waypoint-constrained-final", {
+        waypoints: params.waypoints?.length ?? 0,
+        attemptedCandidates: candidates.length,
+        validCandidates: finalRoutes.length,
+        distances: finalRoutes.map((route) => route.distanceKm),
+      });
+
+      if (finalRoutes.length === 0) {
+        throw new Error("Could not build a route through all selected waypoints.");
+      }
+
+      return finalRoutes;
+    }
 
     if (params.endCoordinate) {
       const rawMapped = this.mapFeaturesToRoutes(
@@ -2073,8 +2440,6 @@ export class OpenRouteServiceProvider implements RouteProvider {
 
       return finalRoutes;
     }
-
-    const generationNonce = this.resolveGenerationNonce(params.generationNonce);
 
     const generated = params.circular
       ? await this.generateCircularFromStartOnly(

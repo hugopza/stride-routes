@@ -9,6 +9,7 @@ export type RouteParams = {
   circular?: boolean;
   startCoordinate?: RouteCoordinate;
   endCoordinate?: RouteCoordinate;
+  waypoints?: RouteCoordinate[];
 };
 
 export type RouteCoordinate = {

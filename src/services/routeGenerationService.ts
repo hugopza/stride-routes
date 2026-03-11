@@ -56,6 +56,8 @@ class RouteGenerationService {
   }
 
   async generateRoutes(params: RouteParams): Promise<CandidateRoute[]> {
+    const hasRequiredWaypoints = (params.waypoints?.length ?? 0) > 0;
+
     if (this.shouldUseOpenRouteService(params)) {
       try {
         const routes = await this.openRouteServiceProvider.generateRoutes(params);
@@ -73,18 +75,22 @@ class RouteGenerationService {
           return [];
         }
 
-        if (env.allowFakeRoutes) {
+        if (env.allowFakeRoutes && !hasRequiredWaypoints) {
           return this.generateFakeRoutesForDevelopment(
             params,
             error instanceof Error ? error.message : "Unknown ORS error",
           );
         }
 
-        throw new Error("Real route provider failed. Please try again.");
+        throw new Error(
+          hasRequiredWaypoints
+            ? "Could not build a route through all selected waypoints."
+            : "Real route provider failed. Please try again.",
+        );
       }
     }
 
-    if (env.allowFakeRoutes) {
+    if (env.allowFakeRoutes && !hasRequiredWaypoints) {
       return this.generateFakeRoutesForDevelopment(
         params,
         "OpenRouteService unavailable for current inputs",
